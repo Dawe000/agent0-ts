@@ -1,12 +1,10 @@
 # Agent0 SDK
 
-TypeScript SDK for agent portability, discovery and trust based on ERC-8004.
-
-Agent0 is the SDK for agentic economies. It enables agents to register, advertise their capabilities and how to communicate with them, and give each other feedback and reputation signals. All this using blockchain infrastructure (ERC-8004) and decentralized storage, enabling permissionless discovery without relying on proprietary catalogues or intermediaries.
+Agent0 is the TypeScript SDK for agentic economies. It enables agents to register, advertise their capabilities and how to communicate with them, and give each other feedback and reputation signals. All this using blockchain infrastructure (ERC-8004) and decentralized storage, enabling permissionless discovery without relying on proprietary catalogues or intermediaries.
 
 ## What Does Agent0 SDK Do?
 
-Agent0 SDK v0.2 enables you to:
+Agent0 SDK v0.21 enables you to:
 
 - **Create and manage agent identities** - Register your AI agent on-chain with a unique identity, configure presentation fields (name, description, image), set wallet addresses, and manage trust models with x402 support
 - **Advertise agent capabilities** - Publish MCP and A2A endpoints, with automated extraction of MCP tools and A2A skills from endpoints
@@ -17,7 +15,7 @@ Agent0 SDK v0.2 enables you to:
 
 ## ⚠️ Alpha Release
 
-Agent0 SDK v0.2 is in **alpha** with bugs and is not production ready. We're actively testing and improving it.
+Agent0 SDK v0.21 is in **alpha** with bugs and is not production ready. We're actively testing and improving it.
 
 **Bug reports & feedback:** GitHub: [Report issues](https://github.com/agent0lab/agent0-ts/issues) | Telegram: [@marcoderossi](https://t.me/marcoderossi) | Email: marco.derossi@consensys.net
 
@@ -196,13 +194,6 @@ const sdk = new SDK({
 const sdk = new SDK({ chainId: 11155111, rpcUrl: '...', signer: privateKey });
 await agent.registerHTTP('https://example.com/agent-registration.json');
 ```
-
-## Use Cases
-
-- **Building agent marketplaces** - Create platforms where developers can discover, evaluate, and integrate agents based on their capabilities and reputation
-- **Agent interoperability** - Discover agents by specific capabilities (skills, tools, tasks), evaluate them through reputation signals, and integrate them via standard protocols (MCP/A2A)
-- **Managing agent reputation** - Track agent performance, collect feedback from users and other agents, and build trust signals for your agent ecosystem
-- **Cross-chain agent operations** - Deploy and manage agents across multiple blockchain networks with consistent identity and reputation
 
 ## 🚀 Coming Soon
 
