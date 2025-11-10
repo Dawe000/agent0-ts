@@ -25,4 +25,12 @@ export {
   type EmbeddingProviderDefinition,
   type VectorStoreProviderDefinition,
 } from './config.js';
+export {
+  type SemanticSyncState,
+  type SemanticSyncStateStore,
+  InMemorySemanticSyncStateStore,
+  computeAgentHash,
+} from './sync-state.js';
+export { FileSemanticSyncStateStore } from './file-sync-state-store.js';
+export { SemanticSyncRunner, type SemanticSyncRunnerOptions } from './sync-runner.js';
 
