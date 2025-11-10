@@ -168,8 +168,35 @@ const agentSummary = await sdk.getAgent('11155111:123');
    - `provider: 'venice'` – defaults to `text-embedding-bge-m3` against `https://api.venice.ai/api/v1/embeddings`
    - `provider: 'openai'` – defaults to `text-embedding-3-small` against `https://api.openai.com/v1/embeddings`
 
-   Both accept a `baseUrl` override for custom OpenAI-compatible hosts (e.g., local proxy or managed Venice instance).
-   Venice’s BGE-M3 model emits 1,024‑dimensional vectors well-suited for multilingual RAG, while OpenAI’s `text-embedding-3` family supports up to 3,072 dimensions with configurable down-projection (256/512/1024/etc.) for cost–performance tuning.
+   Built-in vector stores:
+
+   - `provider: 'pinecone'` – requires `PINECONE_API_KEY`, `PINECONE_INDEX`, optional `PINECONE_NAMESPACE`
+   - `provider: 'weaviate'` – requires `WEAVIATE_ENDPOINT`, optional `WEAVIATE_API_KEY`, `WEAVIATE_CLASS` (defaults to `Agent`), `WEAVIATE_TENANT`, `WEAVIATE_CONSISTENCY_LEVEL`
+
+   All providers accept a `baseUrl` override for custom OpenAI-compatible hosts or bespoke vector deployments. Venice’s BGE-M3 model emits 1,024‑dimensional vectors well-suited for multilingual RAG, while OpenAI’s `text-embedding-3` family supports up to 3,072 dimensions with configurable down-projection (256/512/1024/etc.) for cost–performance tuning.
+
+   Example Weaviate configuration:
+
+   ```typescript
+   const sdk = new SDK({
+     chainId: 11155111,
+     rpcUrl: process.env.RPC_URL!,
+     semanticSearch: {
+       embedding: {
+         provider: 'openai',
+         apiKey: process.env.OPENAI_API_KEY!,
+         model: 'text-embedding-3-large',
+       },
+       vectorStore: {
+         provider: 'weaviate',
+         endpoint: process.env.WEAVIATE_ENDPOINT!,
+         apiKey: process.env.WEAVIATE_API_KEY,
+         className: process.env.WEAVIATE_CLASS || 'Agent',
+         tenant: process.env.WEAVIATE_TENANT,
+       },
+     },
+   });
+   ```
 
    You can supply your own providers by implementing the `EmbeddingProvider` / `VectorStoreProvider` interfaces and passing instances directly instead of the preset objects.
 
@@ -323,6 +350,7 @@ Complete working examples are available in the `examples/` directory:
 - `transfer-agent.ts` - Agent ownership transfer
 - `semantic-search.ts` - Index demo agents and run semantic queries
 - `semantic-sync.ts` - Crash-safe subgraph sync for vector indexing
+- `semantic-sync.ts` + custom state store - Example of pluggable persistence (file-based by default, easy to swap for Redis/Dynamo/etc.)
 
 ## Documentation
 

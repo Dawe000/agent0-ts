@@ -2,6 +2,7 @@ import type { EmbeddingProvider, SemanticSearchProviders, VectorStoreProvider } 
 import { VeniceEmbeddingProvider, type VeniceEmbeddingConfig } from './providers/venice-embedding.js';
 import { OpenAIEmbeddingProvider, type OpenAIEmbeddingConfig } from './providers/openai-embedding.js';
 import { PineconeVectorStore, type PineconeVectorStoreConfig } from './providers/pinecone-vector-store.js';
+import { WeaviateVectorStore, type WeaviateVectorStoreConfig } from './providers/weaviate-vector-store.js';
 
 export type EmbeddingProviderDefinition =
   | EmbeddingProvider
@@ -10,7 +11,8 @@ export type EmbeddingProviderDefinition =
 
 export type VectorStoreProviderDefinition =
   | VectorStoreProvider
-  | ({ provider: 'pinecone' } & PineconeVectorStoreConfig);
+  | ({ provider: 'pinecone' } & PineconeVectorStoreConfig)
+  | ({ provider: 'weaviate' } & WeaviateVectorStoreConfig);
 
 export interface SemanticSearchConfig {
   embedding: EmbeddingProviderDefinition;
@@ -60,6 +62,12 @@ function resolveVectorStoreProvider(definition: VectorStoreProviderDefinition): 
     const { provider: _provider, ...rest } = definition;
     void _provider;
     return new PineconeVectorStore(rest);
+  }
+
+  if (definition.provider === 'weaviate') {
+    const { provider: _provider, ...rest } = definition;
+    void _provider;
+    return new WeaviateVectorStore(rest);
   }
 
   throw new Error(`Unsupported vector store provider: ${(definition as { provider?: string }).provider}`);

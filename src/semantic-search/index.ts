@@ -20,6 +20,7 @@ export { SemanticSearchManager } from './manager.js';
 export { VeniceEmbeddingProvider } from './providers/venice-embedding.js';
 export { OpenAIEmbeddingProvider } from './providers/openai-embedding.js';
 export { PineconeVectorStore } from './providers/pinecone-vector-store.js';
+export { WeaviateVectorStore } from './providers/weaviate-vector-store.js';
 export {
   resolveSemanticSearchProviders,
   type SemanticSearchConfig,

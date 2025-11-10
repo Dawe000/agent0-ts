@@ -1,5 +1,5 @@
-import type { SemanticAgentRecord } from '../types.js';
-import type { EmbeddingProvider } from '../interfaces.js';
+import type { SemanticAgentRecord } from '../types';
+import type { EmbeddingProvider } from '../interfaces';
 
 export interface VeniceEmbeddingConfig {
   apiKey: string;

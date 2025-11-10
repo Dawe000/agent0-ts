@@ -4,6 +4,7 @@ import {
   VeniceEmbeddingProvider,
   OpenAIEmbeddingProvider,
   PineconeVectorStore,
+  WeaviateVectorStore,
   type SemanticAgentRecord,
   type SemanticQueryRequest,
   type VectorQueryMatch,
@@ -58,6 +59,95 @@ describe('resolveSemanticSearchProviders', () => {
         vectorStore: { provider: 'pinecone', apiKey: 'pinecone-key', index: 'test-index' },
       })
     ).toThrow('Unsupported embedding provider');
+  });
+});
+
+describe('WeaviateVectorStore', () => {
+  const originalFetch = global.fetch;
+
+  afterEach(() => {
+    if (originalFetch) {
+      global.fetch = originalFetch;
+    } else {
+      delete (global as unknown as { fetch?: typeof fetch }).fetch;
+    }
+    jest.resetAllMocks();
+  });
+
+  it('upserts vectors via REST API', async () => {
+    const mockFetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({}),
+    });
+    (global as unknown as { fetch: typeof fetch }).fetch = mockFetch as unknown as typeof fetch;
+
+    const store = new WeaviateVectorStore({
+      endpoint: 'https://weaviate.example.com',
+      apiKey: 'test-key',
+      className: 'Agent',
+    });
+
+    await store.upsert({
+      id: '11155111-123',
+      values: [0.1, 0.2],
+      metadata: { name: 'Sample' },
+    });
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      'https://weaviate.example.com/v1/batch/objects',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          Authorization: 'Bearer test-key',
+          'Content-Type': 'application/json',
+        }),
+      })
+    );
+  });
+
+  it('executes vector query via GraphQL', async () => {
+    const mockFetch = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          data: {
+            Get: {
+              Agent: [
+                {
+                  _additional: {
+                    id: '11155111-123',
+                    score: 0.95,
+                  },
+                  metadata: { name: 'Alpha' },
+                },
+              ],
+            },
+          },
+        }),
+      })
+      .mockResolvedValue({
+        ok: true,
+        json: async () => ({}),
+      });
+
+    (global as unknown as { fetch: typeof fetch }).fetch = mockFetch as unknown as typeof fetch;
+
+    const store = new WeaviateVectorStore({
+      endpoint: 'https://weaviate.example.com',
+    });
+
+    const matches = await store.query({
+      vector: [0.1, 0.2],
+      topK: 1,
+    });
+
+    expect(matches).toHaveLength(1);
+    expect(matches[0]).toMatchObject({
+      id: '11155111-123',
+      score: 0.95,
+      metadata: { name: 'Alpha' },
+    });
   });
 });
 
