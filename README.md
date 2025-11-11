@@ -318,6 +318,8 @@ const summary = await sdk.getReputationSummary('84532:123'); // Base Sepolia
    await runner.run();
    ```
 
+   To index multiple chains in one pass, set `SEMANTIC_SYNC_CHAINS` (e.g. `11155111,59141`) and optionally provide `SEMANTIC_SYNC_SUBGRAPH_<CHAINID>` overrides. The sync runner keeps independent checkpoints per chain in the state file, so you can resume without reprocessing already indexed networks.
+
 ### 5. Give and Retrieve Feedback
 
 ```typescript

@@ -244,7 +244,9 @@ export class SDK {
     if (!this._semanticSearchManager) {
       throw new Error('Semantic search is not configured for this SDK instance');
     }
-   * Get subgraph client for a specific chain
+  }
+  /**
+   * Get subgraph client for a specific chain.
    */
   getSubgraphClient(chainId?: ChainId): SubgraphClient | undefined {
     const targetChain = chainId !== undefined ? chainId : this._chainId;
@@ -396,7 +398,7 @@ export class SDK {
     } else {
       // No colon - use default chain
       parsedChainId = this._chainId;
-      formattedAgentId = formatAgentId(this._chainId, parseInt(agentId, 10));
+      formattedAgentId = `${this._chainId}:${parseInt(agentId, 10)}`;
     }
     
     // Determine which chain to query

@@ -1,17 +1,20 @@
 import type { SemanticAgentRecord } from './types.js';
 
+interface LegacySemanticSyncState {
+  lastUpdatedAt?: string;
+  agentHashes?: Record<string, string>;
+}
+
+export interface ChainSyncState {
+  lastUpdatedAt: string;
+  agentHashes?: Record<string, string>;
+}
+
 /**
  * Persisted sync state used to resume semantic indexing without reprocessing all agents.
  */
 export interface SemanticSyncState {
-  /**
-   * Highest subgraph `updatedAt` value (as stringified bigint) that has been processed.
-   */
-  lastUpdatedAt: string;
-  /**
-   * Optional hash map used to detect agent changes and avoid redundant upserts.
-   */
-  agentHashes?: Record<string, string>;
+  chains: Record<string, ChainSyncState>;
 }
 
 /**
@@ -19,9 +22,52 @@ export interface SemanticSyncState {
  * Implementations can back this by the file system, databases, or in-memory stores.
  */
 export interface SemanticSyncStateStore {
-  load(): Promise<SemanticSyncState | null>;
+  load(): Promise<SemanticSyncState | LegacySemanticSyncState | null>;
   save(state: SemanticSyncState): Promise<void>;
   clear?(): Promise<void>;
+}
+
+/**
+ * Normalise incoming state (including legacy single-chain format) into the new multi-chain structure.
+ */
+export function normalizeSemanticSyncState(
+  raw: SemanticSyncState | LegacySemanticSyncState | null | undefined
+): SemanticSyncState {
+  if (!raw) {
+    return { chains: {} };
+  }
+
+  if ('chains' in raw && raw.chains) {
+    const normalizedChains: Record<string, ChainSyncState> = {};
+    for (const [key, chainState] of Object.entries(raw.chains)) {
+      normalizedChains[key] = {
+        lastUpdatedAt: chainState?.lastUpdatedAt ?? '0',
+        agentHashes: chainState?.agentHashes ? { ...chainState.agentHashes } : undefined,
+      };
+    }
+    return { chains: normalizedChains };
+  }
+
+  const legacy = raw as LegacySemanticSyncState;
+  return {
+    chains: {
+      __legacy: {
+        lastUpdatedAt: legacy.lastUpdatedAt ?? '0',
+        agentHashes: legacy.agentHashes ? { ...legacy.agentHashes } : undefined,
+      },
+    },
+  };
+}
+
+function cloneState(state: SemanticSyncState): SemanticSyncState {
+  const clonedChains: Record<string, ChainSyncState> = {};
+  for (const [chainId, chainState] of Object.entries(state.chains)) {
+    clonedChains[chainId] = {
+      lastUpdatedAt: chainState.lastUpdatedAt,
+      agentHashes: chainState.agentHashes ? { ...chainState.agentHashes } : undefined,
+    };
+  }
+  return { chains: clonedChains };
 }
 
 /**
@@ -31,14 +77,11 @@ export class InMemorySemanticSyncStateStore implements SemanticSyncStateStore {
   private state: SemanticSyncState | null = null;
 
   async load(): Promise<SemanticSyncState | null> {
-    return this.state ? { ...this.state, agentHashes: { ...(this.state.agentHashes ?? {}) } } : null;
+    return this.state ? cloneState(this.state) : null;
   }
 
   async save(state: SemanticSyncState): Promise<void> {
-    this.state = {
-      lastUpdatedAt: state.lastUpdatedAt,
-      agentHashes: state.agentHashes ? { ...state.agentHashes } : undefined,
-    };
+    this.state = cloneState(state);
   }
 
   async clear(): Promise<void> {

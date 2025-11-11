@@ -3,16 +3,27 @@
  *
  * Demonstrates how to:
  * 1. Initialize the SDK with Venice + Pinecone providers.
- * 2. Index an agent card into the vector store.
- * 3. Run a semantic query and inspect the results.
- * 4. (Optional) Clean up the inserted vector.
+ * 2. (Optionally) index sample agents into the vector store for a quick demo.
+ * 3. Run a semantic query against the configured vector store and inspect the results.
+ * 4. (Optional) Clean up the inserted vectors.
  *
- * Requirements:
+ * Requirements (env vars or CLI flags):
  *   - VENICE_API_KEY
  *   - PINECONE_API_KEY
  *   - PINECONE_INDEX (existing index with matching vector dimension)
  *   - Optional: PINECONE_NAMESPACE
  *   - RPC_URL (any HTTPS Sepolia endpoint for SDK initialization)
+ *
+ * CLI usage examples:
+ *   npx tsx examples/semantic-search.ts "optimize defi yield"
+ *   npx tsx examples/semantic-search.ts "find supply chain agents" --topK 10 --minScore 0.55 --skip-index
+ *
+ * Flags:
+ *   --skip-index               Skip seeding demo agents (use existing index contents).
+ *   --cleanup                  Remove seeded demo agents when indexing is performed.
+ *   --topK <number>            Number of matches to return (default 5).
+ *   --minScore <number>        Minimum similarity score filter (default 0.5).
+ *   --filters.capabilities=a,b Filter by capabilities (comma-separated).
  *
  * Run with:
  *   node --loader ts-node/esm examples/semantic-search.ts
@@ -22,12 +33,91 @@ import 'dotenv/config';
 import { SDK } from '../src/index.js';
 import type { SemanticAgentRecord } from '../src/semantic-search/index.js';
 
+interface CliOptions {
+  query: string;
+  skipIndex: boolean;
+  cleanup: boolean;
+  topK?: number;
+  minScore?: number;
+  filters: {
+    capabilities?: string[];
+  };
+}
+
 function requireEnv(key: string): string {
   const value = process.env[key];
   if (!value) {
     throw new Error(`Missing required environment variable: ${key}`);
   }
   return value;
+}
+
+function parseCli(): CliOptions {
+  const args = process.argv.slice(2);
+  const queryParts: string[] = [];
+  const filters: CliOptions['filters'] = {};
+  let skipIndex = process.env.SEMANTIC_SEARCH_SKIP_INDEX === 'true';
+  let cleanup = process.env.CLEANUP_SEMANTIC_DEMO === 'true';
+  let topK: number | undefined;
+  let minScore: number | undefined;
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+
+    if (arg === '--skip-index') {
+      skipIndex = true;
+      continue;
+    }
+
+    if (arg === '--cleanup') {
+      cleanup = true;
+      continue;
+    }
+
+    if (arg === '--topK') {
+      const value = Number(args[++i]);
+      if (Number.isNaN(value)) {
+        throw new Error('Invalid value for --topK');
+      }
+      topK = value;
+      continue;
+    }
+
+    if (arg === '--minScore') {
+      const value = Number(args[++i]);
+      if (Number.isNaN(value)) {
+        throw new Error('Invalid value for --minScore');
+      }
+      minScore = value;
+      continue;
+    }
+
+    if (arg.startsWith('--filters.capabilities=')) {
+      const raw = arg.split('=')[1] ?? '';
+      filters.capabilities = raw
+        .split(',')
+        .map(value => value.trim())
+        .filter(Boolean);
+      continue;
+    }
+
+    // Positional arguments form the query string.
+    queryParts.push(arg);
+  }
+
+  const query =
+    queryParts.join(' ').trim() ||
+    process.env.SEMANTIC_SEARCH_QUERY ||
+    'Optimize my DeFi portfolio for stable yields with low risk.';
+
+  return {
+    query,
+    skipIndex,
+    cleanup,
+    topK,
+    minScore,
+    filters,
+  };
 }
 
 async function main() {
@@ -38,6 +128,8 @@ async function main() {
   const pineconeIndex = requireEnv('PINECONE_INDEX');
   const pineconeNamespace = process.env.PINECONE_NAMESPACE;
   const veniceModel = process.env.VENICE_MODEL || 'text-embedding-bge-m3';
+
+  const cli = parseCli();
 
   const sdk = new SDK({
     chainId,
@@ -133,18 +225,21 @@ async function main() {
     },
   ];
 
-  console.log('Indexing demo agents into Pinecone...');
-  await sdk.semanticIndexAgentsBatch(demoAgents);
-  console.log('Indexed agents:', demoAgents.map(agent => agent.agentId).join(', '));
+  if (!cli.skipIndex) {
+    console.log('Indexing demo agents into Pinecone...');
+    await sdk.semanticIndexAgentsBatch(demoAgents);
+    console.log('Indexed agents:', demoAgents.map(agent => agent.agentId).join(', '));
+  } else {
+    console.log('Skipping demo agent indexing (using existing vector data).');
+  }
 
-  console.log('\nRunning semantic search query: "optimize defi yield"');
+  console.log(`\nRunning semantic search query: "${cli.query}"`);
+
   const searchResponse = await sdk.semanticSearchAgents({
-    query: 'Optimize my DeFi portfolio for stable yields with low risk.',
-    topK: 5,
-    minScore: 0.5,
-    filters: {
-      capabilities: ['defi'],
-    },
+    query: cli.query,
+    topK: cli.topK ?? 5,
+    minScore: cli.minScore ?? 0.5,
+    filters: cli.filters,
   });
 
   if (searchResponse.results.length === 0) {
@@ -165,7 +260,7 @@ async function main() {
     }
   }
 
-  if (process.env.CLEANUP_SEMANTIC_DEMO === 'true') {
+  if (!cli.skipIndex && cli.cleanup) {
     console.log('\nCleaning up demo vector...');
     const deletions = demoAgents.map(agent => ({
       chainId: agent.chainId,

@@ -27,8 +27,8 @@ export interface OpenAIEmbeddingConfig {
   buildPayload?: (body: OpenAIEmbeddingRequest) => OpenAIEmbeddingRequest;
 }
 
-import type { SemanticAgentRecord } from '../types';
-import type { EmbeddingProvider } from '../interfaces';
+import type { SemanticAgentRecord } from '../types.js';
+import type { EmbeddingProvider } from '../interfaces.js';
 
 export class OpenAIEmbeddingProvider implements EmbeddingProvider {
   private readonly apiKey: string;

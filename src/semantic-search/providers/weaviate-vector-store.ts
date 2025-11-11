@@ -1,10 +1,10 @@
-import type { SemanticSearchFilters } from '../types';
+import type { SemanticSearchFilters } from '../types.js';
 import type {
   VectorStoreProvider,
   VectorUpsertItem,
   VectorQueryParams,
   VectorQueryMatch,
-} from '../interfaces';
+} from '../interfaces.js';
 
 export interface WeaviateVectorStoreConfig {
   endpoint: string;

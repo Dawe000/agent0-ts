@@ -1,6 +1,6 @@
 import { Pinecone, type RecordMetadata, type RecordMetadataValue } from '@pinecone-database/pinecone';
-import type { SemanticSearchFilters } from '../types';
-import type { VectorQueryMatch, VectorQueryParams, VectorStoreProvider, VectorUpsertItem } from '../interfaces';
+import type { SemanticSearchFilters } from '../types.js';
+import type { VectorQueryMatch, VectorQueryParams, VectorStoreProvider, VectorUpsertItem } from '../interfaces.js';
 
 export interface PineconeVectorStoreConfig {
   apiKey: string;

@@ -1,8 +1,15 @@
 import type { SDK } from '../core/sdk.js';
+import type { ChainId } from '../models/types.js';
+import { SubgraphClient } from '../core/subgraph-client.js';
+import { DEFAULT_SUBGRAPH_URLS } from '../core/contracts.js';
 import type { SemanticAgentRecord } from './types.js';
 import { SemanticSearchManager } from './manager.js';
-import type { SemanticSyncState, SemanticSyncStateStore } from './sync-state.js';
-import { InMemorySemanticSyncStateStore, computeAgentHash } from './sync-state.js';
+import type { ChainSyncState, SemanticSyncState, SemanticSyncStateStore } from './sync-state.js';
+import {
+  InMemorySemanticSyncStateStore,
+  computeAgentHash,
+  normalizeSemanticSyncState,
+} from './sync-state.js';
 
 interface SubgraphAgent {
   id: string;
@@ -27,15 +34,30 @@ interface SubgraphAgent {
   } | null;
 }
 
+export interface SemanticSyncRunnerTarget {
+  chainId: ChainId;
+  subgraphUrl?: string;
+  subgraphClient?: SubgraphClient;
+}
+
 export interface SemanticSyncRunnerOptions {
   batchSize?: number;
   stateStore?: SemanticSyncStateStore;
   logger?: (message: string, extra?: Record<string, unknown>) => void;
-  /**
-   * Include agents whose registration file is missing (will trigger deletions).
-   * Defaults to true.
-   */
   includeOrphanedAgents?: boolean;
+  /**
+   * Optional explicit list of chains/subgraphs to index. Falls back to the SDK chain if omitted.
+   */
+  targets?: SemanticSyncRunnerTarget[];
+  /**
+   * Optional map of chainId -> subgraph URL overrides.
+   */
+  subgraphOverrides?: Record<ChainId, string>;
+}
+
+interface ResolvedTarget {
+  chainId: ChainId;
+  subgraphClient: SubgraphClient;
 }
 
 export class SemanticSyncRunner {
@@ -43,14 +65,14 @@ export class SemanticSyncRunner {
   private readonly stateStore: SemanticSyncStateStore;
   private readonly logger?: (message: string, extra?: Record<string, unknown>) => void;
   private readonly includeOrphanedAgents: boolean;
+  private readonly targetsConfig?: SemanticSyncRunnerTarget[];
+  private readonly subgraphOverrides?: Record<ChainId, string>;
+  private resolvedTargets?: ResolvedTarget[];
 
   constructor(
     private readonly sdk: SDK,
     options: SemanticSyncRunnerOptions = {}
   ) {
-    if (!sdk.subgraphClient) {
-      throw new Error('SemanticSyncRunner requires the SDK to be initialised with a subgraph client');
-    }
     if (!sdk.semanticSearch) {
       throw new Error('Semantic search must be configured on the SDK instance');
     }
@@ -58,23 +80,104 @@ export class SemanticSyncRunner {
     this.stateStore = options.stateStore ?? new InMemorySemanticSyncStateStore();
     this.logger = options.logger;
     this.includeOrphanedAgents = options.includeOrphanedAgents ?? true;
+    this.targetsConfig = options.targets;
+    this.subgraphOverrides = options.subgraphOverrides;
   }
 
   async run(): Promise<void> {
-    const state = (await this.stateStore.load()) ?? this.createEmptyState();
-    let lastUpdatedAt = state.lastUpdatedAt;
+    const state = normalizeSemanticSyncState(await this.stateStore.load());
+    const targets = await this.resolveTargets();
+
+    if (targets.length === 0) {
+      this.log('semantic-sync:no-targets');
+      return;
+    }
+
+    let processedAny = false;
+
+    for (const target of targets) {
+      const processed = await this.processChain(state, target);
+      processedAny = processedAny || processed;
+    }
+
+    // Persist final state in case we migrated legacy entries without processing batches.
+    await this.stateStore.save(state);
+
+    if (!processedAny) {
+      this.log('semantic-sync:no-op', {
+        chains: targets.map(target => target.chainId),
+      });
+    }
+  }
+
+  private async resolveTargets(): Promise<ResolvedTarget[]> {
+    if (this.resolvedTargets) {
+      return this.resolvedTargets;
+    }
+
+    const overrides = this.subgraphOverrides ?? {};
+    const configured =
+      this.targetsConfig && this.targetsConfig.length > 0 ? this.targetsConfig : undefined;
+
+    const resolved: ResolvedTarget[] = [];
+    let defaultChainId: ChainId | undefined;
+
+    if (!configured) {
+      defaultChainId = await this.sdk.chainId();
+    }
+
+    const targets = configured ?? [{ chainId: defaultChainId! }];
+
+    for (const target of targets) {
+      const chainId = Number(target.chainId) as ChainId;
+      let subgraphClient = target.subgraphClient;
+
+      if (!subgraphClient) {
+        let url = target.subgraphUrl ?? overrides[chainId];
+
+        if (!url && defaultChainId !== undefined && chainId === defaultChainId && this.sdk.subgraphClient) {
+          subgraphClient = this.sdk.subgraphClient;
+        } else {
+          if (!url) {
+            url = DEFAULT_SUBGRAPH_URLS[chainId];
+          }
+
+          if (!url) {
+            throw new Error(
+              `No subgraph URL configured for chain ${chainId}. Provide one via SemanticSyncRunner targets or DEFAULT_SUBGRAPH_URLS.`
+            );
+          }
+
+          subgraphClient = new SubgraphClient(url);
+        }
+      }
+
+      resolved.push({
+        chainId,
+        subgraphClient,
+      });
+    }
+
+    this.resolvedTargets = resolved;
+    return resolved;
+  }
+
+  private async processChain(state: SemanticSyncState, target: ResolvedTarget): Promise<boolean> {
+    const chainKey = String(target.chainId);
+    const chainState = this.ensureChainState(state, chainKey);
+    let lastUpdatedAt = chainState.lastUpdatedAt;
     let processedAny = false;
     let hasMore = true;
 
     while (hasMore) {
-      const agents = await this.fetchAgents(lastUpdatedAt, this.batchSize);
+      const agents = await this.fetchAgents(target.subgraphClient, lastUpdatedAt, this.batchSize);
 
       if (agents.length === 0) {
         hasMore = false;
         break;
       }
 
-      const { toIndex, toDelete, maxUpdatedAt, hashes } = this.prepareAgents(agents, state);
+      const { toIndex, toDelete, maxUpdatedAt, hashes } = this.prepareAgents(agents, chainState);
 
       if (toIndex.length > 0) {
         await this.indexAgents(toIndex);
@@ -84,20 +187,23 @@ export class SemanticSyncRunner {
       }
 
       // Update hashes after successful writes
+      chainState.agentHashes = chainState.agentHashes ?? {};
       for (const { agentId, hash } of hashes) {
         if (hash) {
-          state.agentHashes![agentId] = hash;
+          chainState.agentHashes[agentId] = hash;
         } else {
-          delete state.agentHashes![agentId];
+          delete chainState.agentHashes[agentId];
         }
       }
 
       lastUpdatedAt = maxUpdatedAt;
-      state.lastUpdatedAt = lastUpdatedAt;
+      chainState.lastUpdatedAt = lastUpdatedAt;
+      state.chains[chainKey] = chainState;
 
       await this.stateStore.save(state);
-      processedAny = true;
+      processedAny = processedAny || toIndex.length > 0 || toDelete.length > 0;
       this.log('semantic-sync:batch-processed', {
+        chainId: target.chainId,
         indexed: toIndex.length,
         deleted: toDelete.length,
         lastUpdatedAt,
@@ -105,19 +211,33 @@ export class SemanticSyncRunner {
     }
 
     if (!processedAny) {
-      this.log('semantic-sync:no-op', { lastUpdatedAt });
+      this.log('semantic-sync:no-op', { chainId: target.chainId, lastUpdatedAt });
     }
+
+    return processedAny;
   }
 
-  private createEmptyState(): SemanticSyncState {
-    return {
-      lastUpdatedAt: '0',
-      agentHashes: {},
-    };
+  private ensureChainState(state: SemanticSyncState, chainKey: string): ChainSyncState {
+    if (!state.chains[chainKey]) {
+      if (state.chains.__legacy) {
+        state.chains[chainKey] = state.chains.__legacy;
+        delete state.chains.__legacy;
+      } else {
+        state.chains[chainKey] = {
+          lastUpdatedAt: '0',
+          agentHashes: {},
+        };
+      }
+    }
+    state.chains[chainKey].agentHashes = state.chains[chainKey].agentHashes ?? {};
+    return state.chains[chainKey];
   }
 
-  private async fetchAgents(updatedAfter: string, first: number): Promise<SubgraphAgent[]> {
-    const subgraph = this.sdk.subgraphClient!;
+  private async fetchAgents(
+    subgraph: SubgraphClient,
+    updatedAfter: string,
+    first: number
+  ): Promise<SubgraphAgent[]> {
     const query = `
       query SemanticSyncAgents($updatedAfter: BigInt!, $first: Int!) {
         agents(
@@ -161,7 +281,7 @@ export class SemanticSyncRunner {
 
   private prepareAgents(
     agents: SubgraphAgent[],
-    state: SemanticSyncState
+    chainState: ChainSyncState
   ): {
     toIndex: SemanticAgentRecord[];
     toDelete: Array<{ chainId: number; agentId: string }>;
@@ -171,7 +291,7 @@ export class SemanticSyncRunner {
     const toIndex: SemanticAgentRecord[] = [];
     const toDelete: Array<{ chainId: number; agentId: string }> = [];
     const hashes: Array<{ agentId: string; hash?: string }> = [];
-    let maxUpdatedAt = state.lastUpdatedAt;
+    let maxUpdatedAt = chainState.lastUpdatedAt;
 
     for (const agent of agents) {
       const chainId = Number(agent.chainId);
@@ -193,7 +313,7 @@ export class SemanticSyncRunner {
       const record = this.toSemanticAgentRecord(agent);
       const hash = computeAgentHash(record);
 
-      if (state.agentHashes?.[agentId] === hash) {
+      if (chainState.agentHashes?.[agentId] === hash) {
         continue;
       }
 

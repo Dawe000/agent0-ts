@@ -1,6 +1,11 @@
 import { promises as fs } from 'fs';
 import path from 'path';
-import { InMemorySemanticSyncStateStore, type SemanticSyncState, type SemanticSyncStateStore } from './sync-state.js';
+import {
+  InMemorySemanticSyncStateStore,
+  type SemanticSyncState,
+  type SemanticSyncStateStore,
+  normalizeSemanticSyncState,
+} from './sync-state.js';
 
 export interface FileSemanticSyncStateStoreOptions {
   filepath: string;
@@ -28,7 +33,7 @@ export class FileSemanticSyncStateStore implements SemanticSyncStateStore {
     try {
       const data = await fs.readFile(this.filepath, 'utf-8');
       const parsed = JSON.parse(data) as SemanticSyncState;
-      return parsed;
+      return normalizeSemanticSyncState(parsed);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         return null;
@@ -43,7 +48,7 @@ export class FileSemanticSyncStateStore implements SemanticSyncStateStore {
       await fs.mkdir(dir, { recursive: true });
     }
     const tmp = `${this.filepath}.tmp`;
-    const payload = JSON.stringify(state, null, 2);
+    const payload = JSON.stringify(normalizeSemanticSyncState(state), null, 2);
     await fs.writeFile(tmp, payload, 'utf-8');
     await fs.rename(tmp, this.filepath);
   }
