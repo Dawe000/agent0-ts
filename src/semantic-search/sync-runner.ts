@@ -207,6 +207,8 @@ export class SemanticSyncRunner {
         indexed: toIndex.length,
         deleted: toDelete.length,
         lastUpdatedAt,
+        agentIds: toIndex.map(record => record.agentId),
+        agentIdsDeleted: toDelete.map(item => item.agentId),
       });
     }
 
@@ -330,6 +332,7 @@ export class SemanticSyncRunner {
 
     const metadata: Record<string, unknown> = {
       registrationId: reg.id ?? undefined,
+      image: reg.image ?? undefined,
       supportedTrusts: reg.supportedTrusts ?? undefined,
       mcpTools: reg.mcpTools ?? undefined,
       mcpPrompts: reg.mcpPrompts ?? undefined,

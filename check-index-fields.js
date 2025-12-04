@@ -35,3 +35,9 @@ if (withDefault.length > 0) {
   console.log('   This means your index needs to be re-indexed with agent0-ts');
 }
 
+
+
+
+
+
+

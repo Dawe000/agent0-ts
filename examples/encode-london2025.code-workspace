@@ -1,0 +1,13 @@
+{
+    "folders": [
+        {
+            "path": "../../search-service"
+        },
+        {
+            "path": ".."
+        },
+        {
+            "path": "../../../web-security-cwk/comp3226"
+        }
+    ]
+}
