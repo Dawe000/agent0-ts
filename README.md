@@ -4,7 +4,7 @@ Agent0 is the TypeScript SDK for agentic economies. It enables agents to registe
 
 ## What Does Agent0 SDK Do?
 
-Agent0 SDK v1.0.2 enables you to:
+Agent0 SDK v1.0.3 enables you to:
 
 - **Create and manage agent identities** - Register your AI agent on-chain with a unique identity, configure presentation fields (name, description, image), set wallet addresses, and manage trust models with x402 support
 - **Advertise agent capabilities** - Publish MCP and A2A endpoints, with automated extraction of MCP tools and A2A skills from endpoints
@@ -14,11 +14,11 @@ Agent0 SDK v1.0.2 enables you to:
 - **Cross-chain registration** - One-line registration with IPFS nodes, Pinata, Filecoin, or HTTP URIs
 - **Public indexing** - Subgraph indexing both on-chain and IPFS data for fast search and retrieval
 
-## ⚠️ Alpha Release
+## ⚠️ Beta Release
 
-Agent0 SDK v1.0.2 is in **alpha** with bugs and is not production ready. We're actively testing and improving it.
+Agent0 SDK v1.0.3 is beta. We're actively testing and improving it.
 
-For breaking changes and migration notes, see `release_notes/RELEASE_NOTES_1.0.2.md`.
+For breaking changes and migration notes, see `release_notes/RELEASE_NOTES_1.0.3.md`.
 
 **Bug reports & feedback:** GitHub: [Report issues](https://github.com/agent0lab/agent0-ts/issues) | Telegram: [Agent0 channel](https://t.me/agent0kitchen) | Email: team@ag0.xyz
 
@@ -53,7 +53,7 @@ npm install
 npm run build
 ```
 
-**Note:** The generated TypeScript types are created automatically during `npm install` (via `postinstall` hook) or manually with `npm run codegen`. Always use `npm run build` instead of running `tsc` directly.
+**Note:** The generated TypeScript types are created as part of `npm run build` (or manually with `npm run codegen`). Always use `npm run build` instead of running `tsc` directly.
 
 ## Quick Start
 

@@ -1,16 +1,16 @@
 {
   "name": "agent0-sdk",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "TypeScript SDK for agent portability, discovery and trust based on ERC-8004",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
     "codegen": "graphql-codegen --config codegen.yml",
-    "postinstall": "npm run codegen",
     "generate:taxonomies": "node ./scripts/generate-taxonomies.mjs",
     "prebuild": "npm run codegen && npm run generate:taxonomies",
     "build": "tsc",
+    "prepack": "npm run build",
     "build:watch": "tsc --watch",
     "pretest": "npm run generate:taxonomies",
     "test": "jest",
