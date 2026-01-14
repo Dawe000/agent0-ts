@@ -612,7 +612,8 @@ export class AgentIndexer {
           a2a: !!regFile?.a2aEndpoint,
           ens: regFile?.ens || undefined,
           did: regFile?.did || undefined,
-          walletAddress: regFile?.agentWallet ? normalizeAddress(regFile.agentWallet) : undefined,
+          // agentWallet is stored on the Agent entity in the current subgraph schema.
+          walletAddress: agent.agentWallet ? normalizeAddress(agent.agentWallet) : undefined,
           supportedTrusts: regFile?.supportedTrusts || [],
           a2aSkills: regFile?.a2aSkills || [],
           mcpTools: regFile?.mcpTools || [],
@@ -814,7 +815,8 @@ export class AgentIndexer {
         a2a: !!regFile?.a2aEndpoint,
         ens: regFile?.ens || undefined,
         did: regFile?.did || undefined,
-        walletAddress: regFile?.agentWallet ? normalizeAddress(regFile.agentWallet) : undefined,
+        // agentWallet is stored on the Agent entity in the current subgraph schema.
+        walletAddress: agent.agentWallet ? normalizeAddress(agent.agentWallet) : undefined,
         supportedTrusts: regFile?.supportedTrusts || [],
         a2aSkills: regFile?.a2aSkills || [],
         mcpTools: regFile?.mcpTools || [],

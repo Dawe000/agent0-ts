@@ -8,7 +8,7 @@
 
 // Set test timeout for integration tests (2 minutes for blockchain operations)
 if (typeof jest !== 'undefined') {
-  jest.setTimeout(120000);
+  jest.setTimeout(300000);
 }
 
 // Global test setup (runs before all tests)

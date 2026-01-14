@@ -7,6 +7,7 @@ import type {
   Feedback,
   SearchFeedbackParams,
   FeedbackIdTuple,
+  FeedbackFileInput,
 } from '../models/interfaces.js';
 import type { AgentId, Address, URI, Timestamp, IdemKey } from '../models/types.js';
 import type { Web3Client } from './web3-client.js';
@@ -14,16 +15,6 @@ import type { IPFSClient } from './ipfs-client.js';
 import type { SubgraphClient } from './subgraph-client.js';
 import { parseAgentId, formatAgentId, formatFeedbackId, parseFeedbackId } from '../utils/id-format.js';
 import { DEFAULTS } from '../utils/constants.js';
-
-export interface FeedbackAuth {
-  agentId: bigint;
-  clientAddress: Address;
-  indexLimit: bigint;
-  expiry: bigint;
-  chainId: bigint;
-  identityRegistry: Address;
-  signerAddress: Address;
-}
 
 /**
  * Manages feedback operations for the Agent0 SDK
@@ -66,140 +57,27 @@ export class FeedbackManager {
   }
 
   /**
-   * Sign feedback authorization for a client
+   * Prepare an off-chain feedback file.
+   *
+   * This does NOT include on-chain fields (score/tag1/tag2/endpoint). Those are passed
+   * directly to giveFeedback(...) and stored on-chain.
    */
-  async signFeedbackAuth(
-    agentId: AgentId,
-    clientAddress: Address,
-    indexLimit?: number,
-    expiryHours: number = DEFAULTS.FEEDBACK_EXPIRY_HOURS
-  ): Promise<string> {
-    // Parse agent ID to get token ID
-    const { tokenId } = parseAgentId(agentId);
-
-    // Get current feedback index if not provided
-    let indexLimitValue = indexLimit;
-    if (indexLimitValue === undefined && this.reputationRegistry) {
-      try {
-        const lastIndex = await this.web3Client.callContract(
-          this.reputationRegistry,
-          'getLastIndex',
-          BigInt(tokenId),
-          clientAddress
-        );
-        indexLimitValue = Number(lastIndex) + 1;
-      } catch {
-        // If we can't get the index, default to 1 (for first feedback)
-        indexLimitValue = 1;
-      }
-    } else if (indexLimitValue === undefined) {
-      indexLimitValue = 1;
-    }
-
-    // Calculate expiry timestamp
-    const expiry = BigInt(Math.floor(Date.now() / 1000) + expiryHours * 3600);
-
-    // Get chain ID (await if needed)
-    let chainId: bigint;
-    if (this.web3Client.chainId === 0n) {
-      await this.web3Client.initialize();
-      chainId = this.web3Client.chainId;
-    } else {
-      chainId = this.web3Client.chainId;
-    }
-
-    const identityRegistryAddress = this.identityRegistry
-      ? await this.identityRegistry.getAddress()
-      : '0x0';
-    const signerAddress = this.web3Client.address || '0x0';
-
-    if (!signerAddress || signerAddress === '0x0') {
-      throw new Error('No signer available for feedback authorization');
-    }
-
-    // Encode feedback auth data
-    const authData = this.web3Client.encodeFeedbackAuth(
-      BigInt(tokenId),
-      clientAddress,
-      BigInt(indexLimitValue),
-      expiry,
-      chainId,
-      identityRegistryAddress,
-      signerAddress
-    );
-
-    // Hash the encoded data (matching contract's keccak256(abi.encode(...)))
-    // The contract expects: keccak256(abi.encode(...)) then signed with Ethereum message prefix
-    const messageHash = ethers.keccak256(ethers.getBytes(authData));
-
-    // Sign the hash (ethers.js will add the Ethereum signed message prefix automatically)
-    const signature = await this.web3Client.signMessage(ethers.getBytes(messageHash));
-
-    // Combine auth data and signature
-    // Both are hex strings, combine them
-    const authDataNoPrefix = authData.startsWith('0x') ? authData.slice(2) : authData;
-    const sigNoPrefix = signature.startsWith('0x') ? signature.slice(2) : signature;
-    return '0x' + authDataNoPrefix + sigNoPrefix;
-  }
-
-  /**
-   * Prepare feedback file (local file/object) according to spec
-   */
-  prepareFeedback(
-    agentId: AgentId,
-    score?: number, // 0-100
-    tags?: string[],
-    text?: string,
-    capability?: string,
-    name?: string,
-    skill?: string,
-    task?: string,
-    context?: Record<string, unknown>,
-    proofOfPayment?: Record<string, unknown>,
+  prepareFeedbackFile(
+    input: FeedbackFileInput,
     extra?: Record<string, unknown>
-  ): Record<string, unknown> {
-    const tagsArray = tags || [];
-
-    // Parse agent ID to get token ID
-    const { tokenId } = parseAgentId(agentId);
-
-    // Get current timestamp in ISO format
+  ): FeedbackFileInput {
     const createdAt = new Date().toISOString();
 
-    // Determine chain ID and registry address
-    const chainId = this.web3Client.chainId;
-    const identityRegistryAddress = this.identityRegistry
-      ? (this.identityRegistry.target as string)
-      : '0x0';
-    const clientAddress = this.web3Client.address || '0x0';
-
-    // Build feedback data according to spec
-    const feedbackData: Record<string, unknown> = {
-      // MUST FIELDS
-      agentRegistry: `eip155:${chainId}:${identityRegistryAddress}`,
-      agentId: tokenId,
-      clientAddress: `eip155:${chainId}:${clientAddress}`,
-      createdAt,
-      feedbackAuth: '', // Will be filled when giving feedback
-      score: score !== undefined ? Math.round(score) : 0, // Score as integer (0-100)
-
-      // MAY FIELDS
-      tag1: tagsArray[0] || undefined,
-      tag2: tagsArray.length > 1 ? tagsArray[1] : undefined,
-      skill,
-      context,
-      task,
-      capability,
-      name,
-      proofOfPayment: proofOfPayment,
-    };
-
-    // Remove undefined values to keep the structure clean
-    const cleaned: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(feedbackData)) {
+    const cleaned: FeedbackFileInput = {};
+    for (const [key, value] of Object.entries(input || {})) {
       if (value !== undefined && value !== null) {
-        cleaned[key] = value;
+        (cleaned as any)[key] = value;
       }
+    }
+
+    // Include a timestamp by default; harmless and useful for debugging/off-chain indexing.
+    if (!(cleaned as any).createdAt) {
+      (cleaned as any).createdAt = createdAt;
     }
 
     if (extra) {
@@ -214,17 +92,31 @@ export class FeedbackManager {
    */
   async giveFeedback(
     agentId: AgentId,
-    feedbackFile: Record<string, unknown>,
-    idem?: IdemKey,
-    feedbackAuth?: string
+    score: number,
+    tag1?: string,
+    tag2?: string,
+    endpoint?: string,
+    feedbackFile?: FeedbackFileInput,
+    idem?: IdemKey
   ): Promise<Feedback> {
     // Parse agent ID
-    const { tokenId } = parseAgentId(agentId);
+    const { tokenId, chainId: agentChainId } = parseAgentId(agentId);
 
     // Get client address (the one giving feedback)
     const clientAddress = this.web3Client.address;
     if (!clientAddress) {
       throw new Error('No signer available. Cannot give feedback without a wallet.');
+    }
+
+    // Ensure the SDK/provider is configured for the same chain as the agentId we are targeting.
+    // (giveFeedback is an on-chain tx, so we must settle on the agent's chain).
+    const providerChainId = Number((await this.web3Client.provider.getNetwork()).chainId);
+    if (providerChainId !== agentChainId) {
+      throw new Error(
+        `Chain mismatch for giveFeedback: agentId=${agentId} targets chainId=${agentChainId}, ` +
+          `but the SDK provider is connected to chainId=${providerChainId}. ` +
+          `Initialize SDK with chainId=${agentChainId} and the correct rpcUrl.`
+      );
     }
 
     // Get current feedback index for this client-agent pair
@@ -245,36 +137,53 @@ export class FeedbackManager {
       throw new Error(`Failed to get feedback index: ${errorMessage}`);
     }
 
-    // Prepare feedback auth (use provided auth or create new one)
-    let authBytes: string;
-    if (feedbackAuth) {
-      authBytes = feedbackAuth;
-    } else {
-      const authHex = await this.signFeedbackAuth(agentId, clientAddress, feedbackIndex, 24);
-      authBytes = authHex;
-    }
+    // Prepare on-chain data
+    const scoreOnChain = Math.round(score);
+    const tag1OnChain = tag1 || '';
+    const tag2OnChain = tag2 || '';
+    const endpointOnChain = endpoint || '';
 
-    // Update feedback file with auth
-    feedbackFile.feedbackAuth = authBytes.startsWith('0x') ? authBytes : '0x' + authBytes;
-
-    // Prepare on-chain data (only basic fields, no capability/endpoint)
-    const score = feedbackFile.score !== undefined ? Number(feedbackFile.score) : 0;
-    const tag1Str = typeof feedbackFile.tag1 === 'string' ? feedbackFile.tag1 : '';
-    const tag2Str = typeof feedbackFile.tag2 === 'string' ? feedbackFile.tag2 : '';
-    const tag1 = this._stringToBytes32(tag1Str);
-    const tag2 = this._stringToBytes32(tag2Str);
+    const hasOffchainFile = Boolean(feedbackFile && Object.keys(feedbackFile).length > 0);
 
     // Handle off-chain file storage
     let feedbackUri = '';
     let feedbackHash = '0x' + '00'.repeat(32); // Default empty hash
 
-    if (this.ipfsClient) {
+    if (this.ipfsClient && hasOffchainFile) {
       // Store feedback file on IPFS
       try {
-        const cid = await this.ipfsClient.addJson(feedbackFile);
+        // Build an ERC-8004 compliant off-chain feedback file:
+        // include MUST fields from the spec + optional on-chain fields, then append rich off-chain fields.
+        const identityRegistryAddress = this.identityRegistry
+          ? (this.identityRegistry.target as string)
+          : '0x0';
+
+        const createdAt =
+          typeof (feedbackFile as any)?.createdAt === 'string'
+            ? (feedbackFile as any).createdAt
+            : new Date().toISOString();
+
+        const fileForStorage: Record<string, unknown> = {
+          // MUST fields (spec)
+          agentRegistry: `eip155:${agentChainId}:${identityRegistryAddress}`,
+          agentId: tokenId,
+          clientAddress: `eip155:${agentChainId}:${clientAddress}`,
+          createdAt,
+          score: scoreOnChain,
+
+          // OPTIONAL fields that mirror on-chain (spec)
+          ...(tag1OnChain ? { tag1: tag1OnChain } : {}),
+          ...(tag2OnChain ? { tag2: tag2OnChain } : {}),
+          ...(endpointOnChain ? { endpoint: endpointOnChain } : {}),
+
+          // Rich/off-chain fields (capability/name/skill/task/context/proofOfPayment/etc)
+          ...(feedbackFile || {}),
+        };
+
+        const cid = await this.ipfsClient.addJson(fileForStorage, 'feedback.json');
         feedbackUri = `ipfs://${cid}`;
         // Calculate hash of sorted JSON
-        const sortedJson = JSON.stringify(feedbackFile, Object.keys(feedbackFile).sort());
+        const sortedJson = JSON.stringify(fileForStorage, Object.keys(fileForStorage).sort());
         feedbackHash = this.web3Client.keccak256(sortedJson);
       } catch (error) {
         // Failed to store on IPFS - log error but continue without IPFS storage
@@ -282,9 +191,10 @@ export class FeedbackManager {
         console.error(`[Feedback] Failed to store feedback file on IPFS: ${errorMessage}`);
         // Continue without IPFS storage - feedback will be stored on-chain only
       }
-    } else if (feedbackFile.context || feedbackFile.capability || feedbackFile.name) {
-      // If we have rich data but no IPFS, we need to store it somewhere
-      throw new Error('Rich feedback data requires IPFS client for storage');
+    } else if (!this.ipfsClient && hasOffchainFile) {
+      // If the caller provided an off-chain file but no IPFS backend is configured,
+      // we should not silently drop it.
+      throw new Error('feedbackFile provided, but no IPFS backend is configured (pinata/filecoinPin/node).');
     }
 
     // Submit to blockchain
@@ -298,12 +208,12 @@ export class FeedbackManager {
         'giveFeedback',
         {},
         BigInt(tokenId),
-        score,
-        tag1,
-        tag2,
+        scoreOnChain,
+        tag1OnChain,
+        tag2OnChain,
+        endpointOnChain,
         feedbackUri,
-        feedbackHash,
-        ethers.getBytes(authBytes.startsWith('0x') ? authBytes : '0x' + authBytes)
+        feedbackHash
       );
 
       // Wait for transaction confirmation
@@ -316,23 +226,30 @@ export class FeedbackManager {
     // Create feedback object
     const parsedId = parseFeedbackId(formatFeedbackId(agentId, clientAddress, feedbackIndex));
 
-    // Extract typed values from feedbackFile (Record<string, unknown>)
-    const tag1Value = typeof feedbackFile.tag1 === 'string' ? feedbackFile.tag1 : undefined;
-    const tag2Value = typeof feedbackFile.tag2 === 'string' ? feedbackFile.tag2 : undefined;
-    const textValue = typeof feedbackFile.text === 'string' ? feedbackFile.text : undefined;
-    const contextValue = feedbackFile.context && typeof feedbackFile.context === 'object' && !Array.isArray(feedbackFile.context)
-      ? feedbackFile.context as Record<string, any>
+    // Extract typed values from the optional off-chain file
+    const textValue = feedbackFile && typeof feedbackFile.text === 'string' ? feedbackFile.text : undefined;
+    const contextValue =
+      feedbackFile &&
+      feedbackFile.context &&
+      typeof feedbackFile.context === 'object' &&
+      !Array.isArray(feedbackFile.context)
+        ? (feedbackFile.context as Record<string, any>)
       : undefined;
-    const proofOfPaymentValue = feedbackFile.proofOfPayment && typeof feedbackFile.proofOfPayment === 'object' && !Array.isArray(feedbackFile.proofOfPayment)
-      ? feedbackFile.proofOfPayment as Record<string, any>
+    const proofOfPaymentValue =
+      feedbackFile &&
+      feedbackFile.proofOfPayment &&
+      typeof feedbackFile.proofOfPayment === 'object' &&
+      !Array.isArray(feedbackFile.proofOfPayment)
+        ? (feedbackFile.proofOfPayment as Record<string, any>)
       : undefined;
 
     return {
       id: [parsedId.agentId, parsedId.clientAddress, parsedId.feedbackIndex] as FeedbackIdTuple,
       agentId,
       reviewer: clientAddress,
-      score: score > 0 ? score : undefined,
-      tags: [tag1Value, tag2Value].filter(Boolean) as string[],
+      score: scoreOnChain > 0 ? scoreOnChain : undefined,
+      tags: [tag1OnChain || undefined, tag2OnChain || undefined].filter(Boolean) as string[],
+      endpoint: endpointOnChain || undefined,
       text: textValue,
       context: contextValue,
       proofOfPayment: proofOfPaymentValue,
@@ -341,10 +258,10 @@ export class FeedbackManager {
       answers: [],
       isRevoked: false,
       // Off-chain only fields
-      capability: typeof feedbackFile.capability === 'string' ? feedbackFile.capability : undefined,
-      name: typeof feedbackFile.name === 'string' ? feedbackFile.name : undefined,
-      skill: typeof feedbackFile.skill === 'string' ? feedbackFile.skill : undefined,
-      task: typeof feedbackFile.task === 'string' ? feedbackFile.task : undefined,
+      capability: feedbackFile && typeof feedbackFile.capability === 'string' ? feedbackFile.capability : undefined,
+      name: feedbackFile && typeof feedbackFile.name === 'string' ? feedbackFile.name : undefined,
+      skill: feedbackFile && typeof feedbackFile.skill === 'string' ? feedbackFile.skill : undefined,
+      task: feedbackFile && typeof feedbackFile.task === 'string' ? feedbackFile.task : undefined,
     };
   }
 
@@ -375,7 +292,7 @@ export class FeedbackManager {
     const { tokenId } = parseAgentId(agentId);
 
     try {
-      const [score, tag1Bytes, tag2Bytes, isRevoked] = await this.web3Client.callContract(
+      const [score, tag1, tag2, isRevoked] = await this.web3Client.callContract(
         this.reputationRegistry,
         'readFeedback',
         BigInt(tokenId),
@@ -383,7 +300,55 @@ export class FeedbackManager {
         BigInt(feedbackIndex)
       );
 
-      const tags = this._bytes32ToTags(tag1Bytes, tag2Bytes);
+      const tags = [tag1, tag2].filter((t) => t && t !== '') as string[];
+
+      // Best-effort: fetch endpoint + feedbackURI from the NewFeedback event (these are on-chain).
+      let endpoint: string | undefined;
+      let fileURI: string | undefined;
+      try {
+        const latestBlock = await this.web3Client.provider.getBlockNumber();
+        const fromBlock = Math.max(0, latestBlock - 200_000); // bounded scan to avoid huge log queries
+        const filter = (this.reputationRegistry as any).filters.NewFeedback(
+          BigInt(tokenId),
+          clientAddress,
+          null
+        );
+        const logs = await this.reputationRegistry.queryFilter(filter, fromBlock, latestBlock);
+        for (const ev of logs) {
+          // ethers typing can be EventLog OR raw Log; parse defensively.
+          let parsed: any | undefined;
+          try {
+            parsed = (this.reputationRegistry as any).interface.parseLog(ev);
+          } catch {
+            // ignore
+          }
+
+          const idx = parsed?.args?.feedbackIndex;
+          if (idx !== undefined && Number(idx) === feedbackIndex) {
+            const ep = parsed?.args?.endpoint;
+            const uri = parsed?.args?.feedbackURI ?? parsed?.args?.feedbackUri;
+            if (typeof ep === 'string' && ep.length > 0) endpoint = ep;
+            if (typeof uri === 'string' && uri.length > 0) fileURI = uri;
+            break;
+          }
+        }
+      } catch {
+        // ignore - still return core on-chain fields
+      }
+
+      // Fallback: if endpoint wasn't present on-chain, try reading it from the off-chain file.
+      if ((!endpoint || endpoint === '') && fileURI && this.ipfsClient && fileURI.startsWith('ipfs://')) {
+        try {
+          const cid = fileURI.replace('ipfs://', '');
+          const file = await this.ipfsClient.getJson<Record<string, unknown>>(cid);
+          const ep = (file as any)?.endpoint;
+          if (typeof ep === 'string' && ep.length > 0) {
+            endpoint = ep;
+          }
+        } catch {
+          // ignore
+        }
+      }
 
       return {
         id: [agentId, clientAddress.toLowerCase(), feedbackIndex] as FeedbackIdTuple,
@@ -391,6 +356,8 @@ export class FeedbackManager {
         reviewer: clientAddress,
         score: Number(score),
         tags,
+        endpoint,
+        fileURI,
         createdAt: Math.floor(Date.now() / 1000), // Approximate, could be improved
         answers: [],
         isRevoked: Boolean(isRevoked),
@@ -526,12 +493,12 @@ export class FeedbackManager {
       createdAt: resp.createdAt ? parseInt(resp.createdAt, 10) : undefined,
     }));
 
-    // Map tags - check if they're hex bytes32 or plain strings
+    // Map tags (now strings in new spec)
     const tags: string[] = [];
     const tag1 = feedbackData.tag1 || feedbackFile.tag1;
     const tag2 = feedbackData.tag2 || feedbackFile.tag2;
 
-    // Convert hex bytes32 to readable tags
+    // Tags are now strings, just filter out empty ones
     if (tag1 || tag2) {
       tags.push(...this._hexBytes32ToTags(tag1 || '', tag2 || ''));
     }
@@ -567,10 +534,14 @@ export class FeedbackManager {
       reviewer: clientAddress,
       score: feedbackData.score !== undefined && feedbackData.score !== null ? Number(feedbackData.score) : undefined,
       tags,
+      endpoint:
+        typeof feedbackData.endpoint === 'string'
+          ? (feedbackData.endpoint || undefined)
+          : (typeof feedbackFile.endpoint === 'string' ? (feedbackFile.endpoint || undefined) : undefined),
       text: feedbackFile.text || undefined,
       context,
       proofOfPayment,
-      fileURI: feedbackData.feedbackUri || undefined,
+      fileURI: feedbackData.feedbackURI || feedbackData.feedbackUri || undefined,
       createdAt: feedbackData.createdAt ? parseInt(feedbackData.createdAt, 10) : Math.floor(Date.now() / 1000),
       answers,
       isRevoked: feedbackData.isRevoked || false,
@@ -582,55 +553,18 @@ export class FeedbackManager {
   }
 
   /**
-   * Convert hex bytes32 tags back to strings, or return plain strings as-is
-   * The subgraph now stores tags as human-readable strings (not hex),
-   * so this method handles both formats for backwards compatibility
+   * Convert tag strings to array, filtering out empty values
+   * Tags are now strings (not bytes32) in the new spec
    */
   private _hexBytes32ToTags(tag1: string, tag2: string): string[] {
     const tags: string[] = [];
 
-    if (tag1 && tag1 !== '0x' + '00'.repeat(32)) {
-      // If it's already a plain string (from subgraph), use it directly
-      if (!tag1.startsWith('0x')) {
-        if (tag1) {
+    if (tag1 && tag1.trim() !== '') {
           tags.push(tag1);
         }
-      } else {
-        // Try to convert from hex bytes32 (on-chain format)
-        try {
-          const hexBytes = ethers.getBytes(tag1);
-          const tag1Str = new TextDecoder('utf-8', { fatal: false }).decode(
-            hexBytes.filter((b) => b !== 0)
-          );
-          if (tag1Str) {
-            tags.push(tag1Str);
-          }
-        } catch {
-          // Ignore invalid hex strings
-        }
-      }
-    }
 
-    if (tag2 && tag2 !== '0x' + '00'.repeat(32)) {
-      // If it's already a plain string (from subgraph), use it directly
-      if (!tag2.startsWith('0x')) {
-        if (tag2) {
+    if (tag2 && tag2.trim() !== '') {
           tags.push(tag2);
-        }
-      } else {
-        // Try to convert from hex bytes32 (on-chain format)
-        try {
-          const hexBytes = ethers.getBytes(tag2);
-          const tag2Str = new TextDecoder('utf-8', { fatal: false }).decode(
-            hexBytes.filter((b) => b !== 0)
-          );
-          if (tag2Str) {
-            tags.push(tag2Str);
-          }
-        } catch {
-          // Ignore invalid hex strings
-        }
-      }
     }
 
     return tags;
@@ -703,54 +637,6 @@ export class FeedbackManager {
     }
   }
 
-  /**
-   * Convert string to bytes32 for blockchain storage
-   */
-  private _stringToBytes32(text: string): string {
-    if (!text) {
-      return '0x' + '00'.repeat(32);
-    }
-
-    // Encode as UTF-8 and pad/truncate to 32 bytes
-    const encoder = new TextEncoder();
-    const encoded = encoder.encode(text);
-    const padded = new Uint8Array(32);
-    const length = Math.min(encoded.length, 32);
-    padded.set(encoded.slice(0, length), 0);
-
-    return ethers.hexlify(padded);
-  }
-
-  /**
-   * Convert bytes32 tags back to strings
-   */
-  private _bytes32ToTags(tag1Bytes: string, tag2Bytes: string): string[] {
-    const tags: string[] = [];
-
-    if (tag1Bytes && tag1Bytes !== '0x' + '00'.repeat(32)) {
-      try {
-        const tag1 = ethers.toUtf8String(tag1Bytes).replace(/\0/g, '').trim();
-        if (tag1) {
-          tags.push(tag1);
-        }
-      } catch {
-        // If UTF-8 decode fails, skip this tag
-      }
-    }
-
-    if (tag2Bytes && tag2Bytes !== '0x' + '00'.repeat(32)) {
-      try {
-        const tag2 = ethers.toUtf8String(tag2Bytes).replace(/\0/g, '').trim();
-        if (tag2) {
-          tags.push(tag2);
-        }
-      } catch {
-        // If UTF-8 decode fails, skip this tag
-      }
-    }
-
-    return tags;
-  }
 
   /**
    * Get reputation summary
@@ -863,17 +749,17 @@ export class FeedbackManager {
     }
 
     try {
-      const tag1Bytes = tag1 ? this._stringToBytes32(tag1) : '0x' + '00'.repeat(32);
-      const tag2Bytes = tag2 ? this._stringToBytes32(tag2) : '0x' + '00'.repeat(32);
-
       // Get all clients who gave feedback
-      const clients = await this.web3Client.callContract(
+      const clientsResult = await this.web3Client.callContract(
         this.reputationRegistry,
         'getClients',
         BigInt(tokenId)
       );
 
-      if (!Array.isArray(clients) || clients.length === 0) {
+      // ethers may return a read-only Result array; copy to a plain mutable array
+      const clients = Array.isArray(clientsResult) ? Array.from(clientsResult) : [];
+
+      if (clients.length === 0) {
         return { count: 0, averageScore: 0 };
       }
 
@@ -882,8 +768,8 @@ export class FeedbackManager {
         'getSummary',
         BigInt(tokenId),
         clients,
-        tag1Bytes,
-        tag2Bytes
+        tag1 || '',
+        tag2 || ''
       );
 
       return {

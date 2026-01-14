@@ -8,6 +8,7 @@
 import type { IPFSHTTPClient } from 'ipfs-http-client';
 import type { RegistrationFile } from '../models/interfaces.js';
 import { IPFS_GATEWAYS, TIMEOUTS } from '../utils/constants.js';
+import { parseAgentId } from '../utils/id-format.js';
 
 export interface IPFSClientConfig {
   url?: string; // IPFS node URL (e.g., "http://localhost:5001")
@@ -63,7 +64,7 @@ export class IPFSClient {
   /**
    * Pin data to Pinata using v3 API
    */
-  private async _pinToPinata(data: string): Promise<string> {
+  private async _pinToPinata(data: string, fileName: string = 'file.json'): Promise<string> {
     const url = 'https://uploads.pinata.cloud/v3/files';
     const headers = {
       Authorization: `Bearer ${this.config.pinataJwt}`,
@@ -72,7 +73,7 @@ export class IPFSClient {
     // Create a Blob from the data
     const blob = new Blob([data], { type: 'application/json' });
     const formData = new FormData();
-    formData.append('file', blob, 'registration.json');
+    formData.append('file', blob, fileName);
     formData.append('network', 'public');
 
     try {
@@ -191,10 +192,10 @@ export class IPFSClient {
   /**
    * Add data to IPFS and return CID
    */
-  async add(data: string): Promise<string> {
+  async add(data: string, fileName?: string): Promise<string> {
     try {
       if (this.provider === 'pinata') {
-        return await this._pinToPinata(data);
+        return await this._pinToPinata(data, fileName);
       } else if (this.provider === 'filecoinPin') {
         return await this._pinToFilecoin(data);
       } else {
@@ -209,7 +210,7 @@ export class IPFSClient {
    * Add file to IPFS and return CID
    * Note: This method works in Node.js environments. For browser, use add() with file content directly.
    */
-  async addFile(filepath: string): Promise<string> {
+  async addFile(filepath: string, fileName?: string): Promise<string> {
     // Check if we're in Node.js environment
     if (typeof process === 'undefined' || !process.versions?.node) {
       throw new Error(
@@ -222,7 +223,7 @@ export class IPFSClient {
     const data = fs.readFileSync(filepath, 'utf-8');
 
     if (this.provider === 'pinata') {
-      return this._pinToPinata(data);
+      return this._pinToPinata(data, fileName);
     } else if (this.provider === 'filecoinPin') {
       return this._pinToFilecoin(filepath);
     } else {
@@ -343,9 +344,9 @@ export class IPFSClient {
   /**
    * Add JSON data to IPFS and return CID
    */
-  async addJson(data: Record<string, unknown>): Promise<string> {
+  async addJson(data: Record<string, unknown>, fileName?: string): Promise<string> {
     const jsonStr = JSON.stringify(data, null, 2);
-    return this.add(jsonStr);
+    return this.add(jsonStr, fileName);
   }
 
   /**
@@ -384,12 +385,30 @@ export class IPFSClient {
     // Build registrations array
     const registrations: Array<Record<string, unknown>> = [];
     if (registrationFile.agentId) {
-      const [, , tokenId] = registrationFile.agentId.split(':');
-      const agentRegistry = chainId && identityRegistryAddress
-        ? `eip155:${chainId}:${identityRegistryAddress}`
-        : `eip155:1:{identityRegistry}`;
+      // Support both internal SDK AgentId format ("chainId:tokenId") and CAIP-style ("eip155:chainId:tokenId")
+      const agentIdParts = registrationFile.agentId.split(':');
+      let parsedChainId: number | undefined;
+      let parsedTokenId: number | undefined;
+
+      if (agentIdParts.length === 3 && agentIdParts[0] === 'eip155') {
+        parsedChainId = parseInt(agentIdParts[1], 10);
+        parsedTokenId = parseInt(agentIdParts[2], 10);
+      } else {
+        const parsed = parseAgentId(registrationFile.agentId);
+        parsedChainId = parsed.chainId;
+        parsedTokenId = parsed.tokenId;
+      }
+
+      if (parsedTokenId === undefined || Number.isNaN(parsedTokenId)) {
+        throw new Error(`Invalid agentId for registration file: ${registrationFile.agentId}`);
+      }
+
+      const effectiveChainId = chainId ?? parsedChainId ?? 1;
+      const agentRegistry = identityRegistryAddress
+        ? `eip155:${effectiveChainId}:${identityRegistryAddress}`
+        : `eip155:${effectiveChainId}:{identityRegistry}`;
       registrations.push({
-        agentId: parseInt(tokenId, 10),
+        agentId: parsedTokenId,
         agentRegistry,
       });
     }
@@ -409,7 +428,7 @@ export class IPFSClient {
       x402support: registrationFile.x402support,
     };
     
-    return this.addJson(data);
+    return this.addJson(data, 'agent-registration.json');
   }
 
   /**

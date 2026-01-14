@@ -18,7 +18,10 @@ export interface SubgraphQueryOptions {
 
 // Type representing the agent data returned from our queries
 // Note: Queries return partial Agent objects (not all fields are queried)
-export type QueryAgent = Pick<Agent, 'id' | 'chainId' | 'agentId' | 'owner' | 'operators' | 'agentURI' | 'createdAt' | 'updatedAt'> & {
+export type QueryAgent = Pick<
+  Agent,
+  'id' | 'chainId' | 'agentId' | 'owner' | 'operators' | 'agentURI' | 'createdAt' | 'updatedAt' | 'agentWallet'
+> & {
   registrationFile?: AgentRegistrationFile | null;
 };
 
@@ -141,8 +144,6 @@ export class SubgraphClient {
             a2aVersion
             ens
             did
-            agentWallet
-            agentWalletChainId
             mcpTools
             mcpPrompts
             mcpResources
@@ -166,6 +167,7 @@ export class SubgraphClient {
           owner
           operators
           agentURI
+          agentWallet
           createdAt
           updatedAt
           ${regFileFragment}
@@ -202,6 +204,7 @@ export class SubgraphClient {
           owner
           operators
           agentURI
+          agentWallet
           createdAt
           updatedAt
           registrationFile {
@@ -219,8 +222,6 @@ export class SubgraphClient {
             a2aVersion
             ens
             did
-            agentWallet
-            agentWalletChainId
             mcpTools
             mcpPrompts
             mcpResources
@@ -260,7 +261,9 @@ export class SubgraphClient {
     return {
       chainId,
       agentId: agentIdStr,
-      name: regFile?.name || '',
+      // Per ERC-8004 registration schema, name SHOULD be present. If missing in subgraph data,
+      // fall back to agentId string to avoid returning an unusable empty name.
+      name: regFile?.name || agentIdStr,
       image: regFile?.image || undefined,
       description: regFile?.description || '',
       owners: agent.owner ? [normalizeAddress(agent.owner)] : [],
@@ -269,7 +272,7 @@ export class SubgraphClient {
       a2a: !!regFile?.a2aEndpoint,
       ens: regFile?.ens || undefined,
       did: regFile?.did || undefined,
-      walletAddress: regFile?.agentWallet ? normalizeAddress(regFile.agentWallet) : undefined,
+      walletAddress: agent.agentWallet ? normalizeAddress(agent.agentWallet) : undefined,
       supportedTrusts: regFile?.supportedTrusts || [],
       a2aSkills: regFile?.a2aSkills || [],
       mcpTools: regFile?.mcpTools || [],
@@ -307,7 +310,8 @@ export class SubgraphClient {
       if (params.active !== undefined) registrationFileFilters.active = params.active;
       if (params.x402support !== undefined) registrationFileFilters.x402support = params.x402support;
       if (params.ens) registrationFileFilters.ens = params.ens.toLowerCase();
-      if (params.walletAddress) registrationFileFilters.agentWallet = params.walletAddress.toLowerCase();
+      // agentWallet is stored on the Agent entity (not registrationFile) in the current subgraph schema
+      // so we can't push this filter into registrationFile_ here.
       if (params.mcp !== undefined) {
         registrationFileFilters[params.mcp ? 'mcpEndpoint_not' : 'mcpEndpoint'] = null;
       }
@@ -479,7 +483,7 @@ export class SubgraphClient {
       whereClause = `where: { ${whereConditions.join(', ')} }`;
     }
 
-    const query = `
+    const queryWithEndpoint = `
       {
         feedbacks(
           ${whereClause}
@@ -494,7 +498,8 @@ export class SubgraphClient {
           score
           tag1
           tag2
-          feedbackUri
+          endpoint
+          feedbackURI
           feedbackURIType
           feedbackHash
           isRevoked
@@ -528,8 +533,69 @@ export class SubgraphClient {
       }
     `;
 
-    const result = await this.query<{ feedbacks: any[] }>(query);
+    // `endpoint` is an on-chain field in the Jan 2026 deployments, but some older subgraphs may not expose it.
+    // Try a query including `endpoint`, and fall back gracefully if the schema doesn't support it.
+    try {
+      const result = await this.query<{ feedbacks: any[] }>(queryWithEndpoint);
+      return result.feedbacks || [];
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      if (!msg.includes('Cannot query field') || !msg.includes('endpoint')) {
+        throw error;
+      }
+
+      const queryWithoutEndpoint = `
+        {
+          feedbacks(
+            ${whereClause}
+            first: ${first}
+            skip: ${skip}
+            orderBy: ${orderBy}
+            orderDirection: ${orderDirection}
+          ) {
+            id
+            agent { id agentId chainId }
+            clientAddress
+            score
+            tag1
+            tag2
+            feedbackURI
+            feedbackURIType
+            feedbackHash
+            isRevoked
+            createdAt
+            revokedAt
+            feedbackFile {
+              id
+              feedbackId
+              text
+              capability
+              name
+              skill
+              task
+              context
+              proofOfPaymentFromAddress
+              proofOfPaymentToAddress
+              proofOfPaymentChainId
+              proofOfPaymentTxHash
+              tag1
+              tag2
+              createdAt
+            }
+            responses {
+              id
+              responder
+              responseUri
+              responseHash
+              createdAt
+            }
+          }
+        }
+      `;
+
+      const result = await this.query<{ feedbacks: any[] }>(queryWithoutEndpoint);
     return result.feedbacks || [];
+    }
   }
 
   /**
@@ -683,6 +749,7 @@ export class SubgraphClient {
           agentId
           agentURI
           agentURIType
+          agentWallet
           owner
           operators
           createdAt
@@ -703,8 +770,6 @@ export class SubgraphClient {
             a2aVersion
             ens
             did
-            agentWallet
-            agentWalletChainId
             mcpTools
             mcpPrompts
             mcpResources

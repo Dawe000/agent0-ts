@@ -45,7 +45,6 @@ describe('Agent Transfer', () => {
     );
 
     // Configure agent details
-    agent.setAgentWallet(ownerAAddress, CHAIN_ID);
     agent.setENS('transfer-test-agent.eth');
     agent.setMetadata({
       version: '1.0',
@@ -94,8 +93,8 @@ describe('Agent Transfer', () => {
     // Verify agent URI unchanged
     const identityRegistry = agentSdk.getIdentityRegistry();
     const { tokenId } = await import('../src/utils/id-format').then((m) => m.parseAgentId(agentId));
-    const agentUri = await agentSdk.web3Client.callContract(identityRegistry, 'tokenURI', BigInt(tokenId));
-    expect(agentUri).toBeTruthy();
+    const agentURI = await agentSdk.web3Client.callContract(identityRegistry, 'tokenURI', BigInt(tokenId));
+    expect(agentURI).toBeTruthy();
   });
 
   it('should fail to transfer from non-owner', async () => {

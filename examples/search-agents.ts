@@ -41,16 +41,10 @@ async function main() {
 
   // 4. Search agents by reputation
   console.log('\nSearching agents by reputation...');
-  const reputationResults = await sdk.searchAgentsByReputation(
-    undefined, // agents (optional)
-    ['data_analyst', 'finance'], // tags
-    undefined, // reviewers (optional)
-    undefined, // capabilities (optional)
-    undefined, // skills (optional)
-    undefined, // tasks (optional)
-    undefined, // names (optional)
-    80 // minAverageScore
-  );
+  const reputationResults = await sdk.searchAgentsByReputation({
+    tags: ['data_analyst', 'finance'],
+    minAverageScore: 80,
+  });
   console.log(`Found ${reputationResults.items.length} agents with high reputation`);
   // Note: averageScore is available in agent.extras.averageScore
 
@@ -74,12 +68,7 @@ async function main() {
   let cursor: string | undefined;
   let page = 1;
   do {
-    const pageResults = await sdk.searchAgents(
-      { active: true },
-      undefined,
-      10, // pageSize
-      cursor
-    );
+    const pageResults = await sdk.searchAgents({ active: true }, { pageSize: 10, cursor });
     console.log(`Page ${page}: Found ${pageResults.items.length} agents`);
     cursor = pageResults.nextCursor;
     page++;

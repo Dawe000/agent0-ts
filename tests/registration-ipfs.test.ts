@@ -1,10 +1,13 @@
 /**
  * Integration test for Agent Registration with IPFS Pin (using Pinata)
- * Creates an agent, updates it on-chain, deletes it, reloads it, and verifies data integrity.
+ * Creates an agent, registers it with an IPFS-hosted registration file (agentURI),
+ * updates it (publishes a new IPFS registration file and updates agentURI on-chain),
+ * reloads it, and verifies data integrity.
  */
 
+import { ethers } from 'ethers';
 import { SDK } from '../src/index';
-import { CHAIN_ID, RPC_URL, AGENT_PRIVATE_KEY, PINATA_JWT, printConfig } from './config';
+import { CHAIN_ID, RPC_URL, AGENT_PRIVATE_KEY, PINATA_JWT, CLIENT_PRIVATE_KEY, printConfig } from './config';
 
 function generateRandomData() {
   const randomSuffix = Math.floor(Math.random() * 9000) + 1000;
@@ -34,6 +37,7 @@ describe('Agent Registration with IPFS Pin', () => {
   let sdk: SDK;
   let testData: ReturnType<typeof generateRandomData>;
   let agentId: string;
+  let agent: any; // reuse the same agent instance to avoid relying on on-chain URI updates
 
   beforeAll(() => {
     printConfig();
@@ -52,12 +56,11 @@ describe('Agent Registration with IPFS Pin', () => {
     sdk = new SDK(sdkConfig);
     testData = generateRandomData();
 
-    const agent = sdk.createAgent(testData.name, testData.description, testData.image);
+    agent = sdk.createAgent(testData.name, testData.description, testData.image);
 
     await agent.setMCP(testData.mcpEndpoint, testData.mcpVersion, false); // Disable endpoint crawling (2B)
     await agent.setA2A(testData.a2aEndpoint, testData.a2aVersion, false); // Disable endpoint crawling (2B)
     agent.setENS(testData.ensName, testData.ensVersion);
-    agent.setAgentWallet(testData.walletAddress, testData.walletChainId);
     agent.setActive(testData.active);
     agent.setX402Support(testData.x402support);
     agent.setTrust(testData.reputation, testData.cryptoEconomic, testData.teeAttestation);
@@ -65,13 +68,28 @@ describe('Agent Registration with IPFS Pin', () => {
     const registrationFile = await agent.registerIPFS();
     agentId = registrationFile.agentId!;
 
+    // Set agent wallet on-chain (two-wallet flow): new wallet must sign
+    if (!CLIENT_PRIVATE_KEY || CLIENT_PRIVATE_KEY.trim() === '') {
+      throw new Error('CLIENT_PRIVATE_KEY is required for agentWallet tests. Set it in .env.');
+    }
+    const secondWalletAddress = new ethers.Wallet(
+      CLIENT_PRIVATE_KEY.startsWith('0x') ? CLIENT_PRIVATE_KEY : `0x${CLIENT_PRIVATE_KEY}`
+    ).address;
+    await agent.setAgentWallet(secondWalletAddress, { newWalletSigner: CLIENT_PRIVATE_KEY });
+
     expect(agentId).toBeTruthy();
     expect(registrationFile.agentURI).toBeTruthy();
     expect(registrationFile.agentURI!.startsWith('ipfs://')).toBe(true);
   });
 
-  it('should update agent registration', async () => {
-    const agent = await sdk.loadAgent(agentId);
+  it(
+    'should update agent registration',
+    async () => {
+      // Reuse the existing agent object instead of loadAgent(), since some deployments
+      // may not support on-chain URI updates (setAgentURI), which loadAgent depends on.
+      if (!agent) {
+        throw new Error('Agent not initialized from previous test');
+      }
 
     const randomSuffix = Math.floor(Math.random() * 90000) + 10000;
 
@@ -80,13 +98,25 @@ describe('Agent Registration with IPFS Pin', () => {
       testData.description + ' - UPDATED',
       `https://example.com/image_${Math.floor(Math.random() * 9000) + 1000}_updated.png`
     );
-    await agent.setMCP(`https://api.example.com/mcp/${randomSuffix}`, `2025-06-${Math.floor(Math.random() * 28) + 1}`, false); // Disable endpoint crawling (2B)
+      await agent.setMCP(
+        `https://api.example.com/mcp/${randomSuffix}`,
+        `2025-06-${Math.floor(Math.random() * 28) + 1}`,
+        false
+      ); // Disable endpoint crawling (2B)
     await agent.setA2A(
       `https://api.example.com/a2a/${randomSuffix}.json`,
       `0.${Math.floor(Math.random() * 6) + 30}`,
       false // Disable endpoint crawling (2B)
     );
-    agent.setAgentWallet(`0x${'b'.repeat(40)}`, [1, 11155111, 8453, 137, 42161][Math.floor(Math.random() * 5)]);
+
+      // Update agent wallet on-chain again using the same second wallet signer (for simplicity)
+      if (!CLIENT_PRIVATE_KEY || CLIENT_PRIVATE_KEY.trim() === '') {
+        throw new Error('CLIENT_PRIVATE_KEY is required for agentWallet tests. Set it in .env.');
+      }
+      const secondWalletAddress = new ethers.Wallet(
+        CLIENT_PRIVATE_KEY.startsWith('0x') ? CLIENT_PRIVATE_KEY : `0x${CLIENT_PRIVATE_KEY}`
+      ).address;
+      await agent.setAgentWallet(secondWalletAddress, { newWalletSigner: CLIENT_PRIVATE_KEY });
     agent.setENS(`${testData.ensName}.updated`, `1.${Math.floor(Math.random() * 10)}`);
     agent.setActive(false);
     agent.setX402Support(true);
@@ -101,14 +131,15 @@ describe('Agent Registration with IPFS Pin', () => {
 
     const updatedRegistrationFile = await agent.registerIPFS();
     expect(updatedRegistrationFile.agentURI).toBeTruthy();
-  });
+    },
+    180000
+  );
 
   it('should reload and verify updated agent', async () => {
     // Wait for blockchain transaction to be mined
     await new Promise((resolve) => setTimeout(resolve, 15000)); // 15 seconds
 
     const reloadedAgent = await sdk.loadAgent(agentId);
-
     expect(reloadedAgent.name).toBe(testData.name + ' UPDATED');
     expect(reloadedAgent.description).toContain('UPDATED');
     expect(reloadedAgent.getRegistrationFile().active).toBe(false);

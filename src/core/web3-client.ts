@@ -139,8 +139,8 @@ export class Web3Client {
    * Router wrapper for register() function overloads
    * Intelligently selects the correct overload based on arguments:
    * - register() - no arguments
-   * - register(string tokenUri) - just tokenUri
-   * - register(string tokenUri, tuple[] metadata) - tokenUri + metadata
+   * - register(string agentURI) - just agentURI
+   * - register(string agentURI, tuple[] metadata) - agentURI + metadata
    */
   private async registerAgent(
     contract: Contract,
@@ -162,11 +162,11 @@ export class Web3Client {
       functionName = 'register()';
       callArgs = [];
     } else if (args.length === 1 && typeof args[0] === 'string') {
-      // register(string tokenUri) - just tokenUri
+      // register(string agentURI) - just agentURI
       functionName = 'register(string)';
       callArgs = [args[0]];
     } else if (args.length === 2 && typeof args[0] === 'string' && Array.isArray(args[1])) {
-      // register(string tokenUri, tuple[] metadata) - tokenUri + metadata
+      // register(string agentURI, tuple[] metadata) - agentURI + metadata
       functionName = 'register(string,(string,bytes)[])';
       callArgs = [args[0], args[1]];
     } else {
@@ -198,7 +198,7 @@ export class Web3Client {
    */
   async waitForTransaction(
     txHash: string,
-    timeout: number = 60000
+    timeout: number = 180000
   ): Promise<ethers.ContractTransactionReceipt> {
     return (await this.provider.waitForTransaction(txHash, undefined, timeout)) as ethers.ContractTransactionReceipt;
   }
@@ -217,24 +217,6 @@ export class Web3Client {
   }
 
   /**
-   * Encode feedback authorization data
-   */
-  encodeFeedbackAuth(
-    agentId: bigint,
-    clientAddress: string,
-    indexLimit: bigint,
-    expiry: bigint,
-    chainId: bigint,
-    identityRegistry: string,
-    signerAddress: string
-  ): string {
-    return ethers.AbiCoder.defaultAbiCoder().encode(
-      ['uint256', 'address', 'uint64', 'uint256', 'uint256', 'address', 'address'],
-      [agentId, clientAddress, indexLimit, expiry, chainId, identityRegistry, signerAddress]
-    );
-  }
-
-  /**
    * Sign a message with the account's private key
    */
   async signMessage(message: string | Uint8Array): Promise<string> {
@@ -242,6 +224,201 @@ export class Web3Client {
       throw new Error('No signer available');
     }
     return await this.signer.signMessage(message);
+  }
+
+  /**
+   * Sign typed data (EIP-712) with the account's private key
+   */
+  async signTypedData(
+    domain: {
+      name?: string;
+      version?: string;
+      chainId?: number | bigint;
+      verifyingContract?: string;
+      salt?: string;
+    },
+    types: Record<string, any>,
+    value: Record<string, any>
+  ): Promise<string> {
+    if (!this.signer) {
+      throw new Error('No signer available');
+    }
+    // ethers.js v6 signTypedData signature
+    const sig = await (this.signer as any).signTypedData(domain, types, value);
+    return this.normalizeEcdsaSignature(sig);
+  }
+
+  /**
+   * Build canonical EIP-712 typed data for IdentityRegistry.setAgentWallet (ERC-8004 Jan 2026).
+   *
+   * Contract expects:
+   * - domain: name="ERC8004IdentityRegistry", version="1"
+   * - primary type: AgentWalletSet(uint256 agentId,address newWallet,address owner,uint256 deadline)
+   */
+  buildAgentWalletSetTypedData(params: {
+    agentId: bigint;
+    newWallet: string;
+    owner: string;
+    deadline: bigint;
+    chainId: number | bigint;
+    verifyingContract: string;
+    domainName?: string;
+    domainVersion?: string;
+  }): {
+    domain: {
+      name: string;
+      version: string;
+      chainId: number | bigint;
+      verifyingContract: string;
+    };
+    types: {
+      AgentWalletSet: Array<{ name: string; type: string }>;
+    };
+    message: {
+      agentId: bigint;
+      newWallet: string;
+      owner: string;
+      deadline: bigint;
+    };
+  } {
+    const domain = {
+      name: params.domainName || 'ERC8004IdentityRegistry',
+      version: params.domainVersion || '1',
+      chainId: params.chainId,
+      verifyingContract: params.verifyingContract,
+    };
+
+    const types = {
+      AgentWalletSet: [
+        { name: 'agentId', type: 'uint256' },
+        { name: 'newWallet', type: 'address' },
+        { name: 'owner', type: 'address' },
+        { name: 'deadline', type: 'uint256' },
+      ],
+    };
+
+    const message = {
+      agentId: params.agentId,
+      newWallet: params.newWallet,
+      owner: params.owner,
+      deadline: params.deadline,
+    };
+
+    return { domain, types, message };
+  }
+
+  /**
+   * Legacy typed-data variant (without owner field).
+   * Some deployments may use AgentWalletSet(uint256 agentId,address newWallet,uint256 deadline).
+   */
+  buildAgentWalletSetTypedDataNoOwner(params: {
+    agentId: bigint;
+    newWallet: string;
+    deadline: bigint;
+    chainId: number | bigint;
+    verifyingContract: string;
+    domainName?: string;
+    domainVersion?: string;
+  }): {
+    domain: {
+      name: string;
+      version: string;
+      chainId: number | bigint;
+      verifyingContract: string;
+    };
+    types: {
+      AgentWalletSet: Array<{ name: string; type: string }>;
+    };
+    message: {
+      agentId: bigint;
+      newWallet: string;
+      deadline: bigint;
+    };
+  } {
+    const domain = {
+      name: params.domainName || 'ERC8004IdentityRegistry',
+      version: params.domainVersion || '1',
+      chainId: params.chainId,
+      verifyingContract: params.verifyingContract,
+    };
+
+    const types = {
+      AgentWalletSet: [
+        { name: 'agentId', type: 'uint256' },
+        { name: 'newWallet', type: 'address' },
+        { name: 'deadline', type: 'uint256' },
+      ],
+    };
+
+    const message = {
+      agentId: params.agentId,
+      newWallet: params.newWallet,
+      deadline: params.deadline,
+    };
+
+    return { domain, types, message };
+  }
+
+  /**
+   * Sign EIP-712 typed data with either:
+   * - a private key string (EOA), or
+   * - an ethers Signer (EOA / smart account with a signer abstraction).
+   */
+  async signTypedDataWith(
+    signerOrKey: string | Wallet | Signer,
+    domain: Record<string, any>,
+    types: Record<string, any>,
+    message: Record<string, any>
+  ): Promise<string> {
+    if (typeof signerOrKey === 'string') {
+      const key = signerOrKey.startsWith('0x') ? signerOrKey : `0x${signerOrKey}`;
+      const wallet = new ethers.Wallet(key);
+      const sig = await (wallet as any).signTypedData(domain, types, message);
+      return this.normalizeEcdsaSignature(sig);
+    }
+    const sig = await (signerOrKey as any).signTypedData(domain, types, message);
+    return this.normalizeEcdsaSignature(sig);
+  }
+
+  /**
+   * Normalize ECDSA signatures to use v = 27/28 (some contracts/libraries expect this).
+   * ethers may produce signatures with v in {0,1}.
+   */
+  normalizeEcdsaSignature(signature: string): string {
+    const sig = signature.startsWith('0x') ? signature : `0x${signature}`;
+    const bytes = ethers.getBytes(sig);
+    if (bytes.length !== 65) {
+      return sig;
+    }
+    const v = bytes[64];
+    if (v === 0 || v === 1) {
+      bytes[64] = v + 27;
+      return ethers.hexlify(bytes);
+    }
+    return sig;
+  }
+
+  /**
+   * Recover the signer address for EIP-712 typed data (EOA path).
+   */
+  recoverTypedDataSigner(
+    domain: Record<string, any>,
+    types: Record<string, any>,
+    message: Record<string, any>,
+    signature: string
+  ): string {
+    return ethers.verifyTypedData(domain, types, message, signature);
+  }
+
+  /**
+   * Resolve an address for a provided signer or private key string.
+   */
+  async addressOf(signerOrKey: string | Wallet | Signer): Promise<string> {
+    if (typeof signerOrKey === 'string') {
+      const key = signerOrKey.startsWith('0x') ? signerOrKey : `0x${signerOrKey}`;
+      return new ethers.Wallet(key).address;
+    }
+    return await signerOrKey.getAddress();
   }
 
   /**

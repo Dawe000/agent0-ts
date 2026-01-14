@@ -5,8 +5,9 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { ethers } from 'ethers';
 import { SDK } from '../src/index';
-import { CHAIN_ID, RPC_URL, AGENT_PRIVATE_KEY, printConfig } from './config';
+import { CHAIN_ID, RPC_URL, AGENT_PRIVATE_KEY, CLIENT_PRIVATE_KEY, printConfig } from './config';
 
 function generateRandomData() {
   const randomSuffix = Math.floor(Math.random() * 9000) + 1000;
@@ -73,10 +74,18 @@ describe('Agent Registration with HTTP URI', () => {
     await agent.setMCP(testData.mcpEndpoint, testData.mcpVersion);
     await agent.setA2A(testData.a2aEndpoint, testData.a2aVersion);
     agent.setENS(testData.ensName, testData.ensVersion);
-    agent.setAgentWallet(testData.walletAddress, testData.walletChainId);
     agent.setActive(testData.active);
     agent.setX402Support(testData.x402support);
     agent.setTrust(testData.reputation, testData.cryptoEconomic, testData.teeAttestation);
+
+    // Set agent wallet on-chain (two-wallet flow): new wallet must sign
+    if (!CLIENT_PRIVATE_KEY || CLIENT_PRIVATE_KEY.trim() === '') {
+      throw new Error('CLIENT_PRIVATE_KEY is required for agentWallet tests. Set it in .env.');
+    }
+    const secondWalletAddress = new ethers.Wallet(
+      CLIENT_PRIVATE_KEY.startsWith('0x') ? CLIENT_PRIVATE_KEY : `0x${CLIENT_PRIVATE_KEY}`
+    ).address;
+    await agent.setAgentWallet(secondWalletAddress, { newWalletSigner: CLIENT_PRIVATE_KEY });
 
     // Get registration file and save it
     const registrationFile = agent.getRegistrationFile();
@@ -107,7 +116,14 @@ describe('Agent Registration with HTTP URI', () => {
       `https://api.example.com/a2a/${randomSuffix}.json`,
       `0.${Math.floor(Math.random() * 6) + 30}`
     );
-    agent.setAgentWallet(`0x${'b'.repeat(40)}`, [1, 11155111, 8453, 137, 42161][Math.floor(Math.random() * 5)]);
+    // Update agent wallet on-chain again using the same second wallet signer (for simplicity)
+    if (!CLIENT_PRIVATE_KEY || CLIENT_PRIVATE_KEY.trim() === '') {
+      throw new Error('CLIENT_PRIVATE_KEY is required for agentWallet tests. Set it in .env.');
+    }
+    const secondWalletAddress = new ethers.Wallet(
+      CLIENT_PRIVATE_KEY.startsWith('0x') ? CLIENT_PRIVATE_KEY : `0x${CLIENT_PRIVATE_KEY}`
+    ).address;
+    await agent.setAgentWallet(secondWalletAddress, { newWalletSigner: CLIENT_PRIVATE_KEY });
     agent.setENS(`${testData.ensName}.updated`, `1.${Math.floor(Math.random() * 10)}`);
     agent.setActive(false);
     agent.setX402Support(true);

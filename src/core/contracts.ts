@@ -72,16 +72,6 @@ export const ERC721_URI_STORAGE_ABI = [
     stateMutability: 'view',
     type: 'function',
   },
-  {
-    inputs: [
-      { internalType: 'uint256', name: 'tokenId', type: 'uint256' },
-      { internalType: 'string', name: '_tokenURI', type: 'string' },
-    ],
-    name: 'setTokenURI',
-    outputs: [],
-    stateMutability: 'nonpayable',
-    type: 'function',
-  },
 ] as const;
 
 // Identity Registry ABI
@@ -90,13 +80,35 @@ export const IDENTITY_REGISTRY_ABI = [
   ...ERC721_URI_STORAGE_ABI,
   {
     inputs: [],
+    name: 'DOMAIN_SEPARATOR',
+    outputs: [{ internalType: 'bytes32', name: '', type: 'bytes32' }],
+    stateMutability: 'view',
+    type: 'function',
+  },
+  {
+    inputs: [],
+    name: 'eip712Domain',
+    outputs: [
+      { internalType: 'bytes1', name: 'fields', type: 'bytes1' },
+      { internalType: 'string', name: 'name', type: 'string' },
+      { internalType: 'string', name: 'version', type: 'string' },
+      { internalType: 'uint256', name: 'chainId', type: 'uint256' },
+      { internalType: 'address', name: 'verifyingContract', type: 'address' },
+      { internalType: 'bytes32', name: 'salt', type: 'bytes32' },
+      { internalType: 'uint256[]', name: 'extensions', type: 'uint256[]' },
+    ],
+    stateMutability: 'view',
+    type: 'function',
+  },
+  {
+    inputs: [],
     name: 'register',
     outputs: [{ internalType: 'uint256', name: 'agentId', type: 'uint256' }],
     stateMutability: 'nonpayable',
     type: 'function',
   },
   {
-    inputs: [{ internalType: 'string', name: 'tokenUri', type: 'string' }],
+    inputs: [{ internalType: 'string', name: 'agentURI', type: 'string' }],
     name: 'register',
     outputs: [{ internalType: 'uint256', name: 'agentId', type: 'uint256' }],
     stateMutability: 'nonpayable',
@@ -104,13 +116,13 @@ export const IDENTITY_REGISTRY_ABI = [
   },
   {
     inputs: [
-      { internalType: 'string', name: 'tokenUri', type: 'string' },
+      { internalType: 'string', name: 'agentURI', type: 'string' },
       {
         components: [
-          { internalType: 'string', name: 'key', type: 'string' },
-          { internalType: 'bytes', name: 'value', type: 'bytes' },
+          { internalType: 'string', name: 'metadataKey', type: 'string' },
+          { internalType: 'bytes', name: 'metadataValue', type: 'bytes' },
         ],
-        internalType: 'struct IdentityRegistry.MetadataEntry[]',
+        internalType: 'struct IdentityRegistryUpgradeable.MetadataEntry[]',
         name: 'metadata',
         type: 'tuple[]',
       },
@@ -144,18 +156,37 @@ export const IDENTITY_REGISTRY_ABI = [
   {
     inputs: [
       { internalType: 'uint256', name: 'agentId', type: 'uint256' },
-      { internalType: 'string', name: 'newUri', type: 'string' },
+      { internalType: 'string', name: 'newURI', type: 'string' },
     ],
-    name: 'setAgentUri',
+    name: 'setAgentURI',
     outputs: [],
     stateMutability: 'nonpayable',
+    type: 'function',
+  },
+  {
+    inputs: [
+      { internalType: 'uint256', name: 'agentId', type: 'uint256' },
+      { internalType: 'address', name: 'newWallet', type: 'address' },
+      { internalType: 'uint256', name: 'deadline', type: 'uint256' },
+      { internalType: 'bytes', name: 'signature', type: 'bytes' },
+    ],
+    name: 'setAgentWallet',
+    outputs: [],
+    stateMutability: 'nonpayable',
+    type: 'function',
+  },
+  {
+    inputs: [{ internalType: 'uint256', name: 'agentId', type: 'uint256' }],
+    name: 'getAgentWallet',
+    outputs: [{ internalType: 'address', name: '', type: 'address' }],
+    stateMutability: 'view',
     type: 'function',
   },
   {
     anonymous: false,
     inputs: [
       { indexed: true, internalType: 'uint256', name: 'agentId', type: 'uint256' },
-      { indexed: false, internalType: 'string', name: 'tokenURI', type: 'string' },
+      { indexed: false, internalType: 'string', name: 'agentURI', type: 'string' },
       { indexed: true, internalType: 'address', name: 'owner', type: 'address' },
     ],
     name: 'Registered',
@@ -165,9 +196,19 @@ export const IDENTITY_REGISTRY_ABI = [
     anonymous: false,
     inputs: [
       { indexed: true, internalType: 'uint256', name: 'agentId', type: 'uint256' },
-      { indexed: true, internalType: 'string', name: 'indexedKey', type: 'string' },
-      { indexed: false, internalType: 'string', name: 'key', type: 'string' },
-      { indexed: false, internalType: 'bytes', name: 'value', type: 'bytes' },
+      { indexed: false, internalType: 'string', name: 'newURI', type: 'string' },
+      { indexed: true, internalType: 'address', name: 'updatedBy', type: 'address' },
+    ],
+    name: 'URIUpdated',
+    type: 'event',
+  },
+  {
+    anonymous: false,
+    inputs: [
+      { indexed: true, internalType: 'uint256', name: 'agentId', type: 'uint256' },
+      { indexed: true, internalType: 'string', name: 'indexedMetadataKey', type: 'string' },
+      { indexed: false, internalType: 'string', name: 'metadataKey', type: 'string' },
+      { indexed: false, internalType: 'bytes', name: 'metadataValue', type: 'bytes' },
     ],
     name: 'MetadataSet',
     type: 'event',
@@ -187,11 +228,11 @@ export const REPUTATION_REGISTRY_ABI = [
     inputs: [
       { internalType: 'uint256', name: 'agentId', type: 'uint256' },
       { internalType: 'uint8', name: 'score', type: 'uint8' },
-      { internalType: 'bytes32', name: 'tag1', type: 'bytes32' },
-      { internalType: 'bytes32', name: 'tag2', type: 'bytes32' },
-      { internalType: 'string', name: 'feedbackUri', type: 'string' },
+      { internalType: 'string', name: 'tag1', type: 'string' },
+      { internalType: 'string', name: 'tag2', type: 'string' },
+      { internalType: 'string', name: 'endpoint', type: 'string' },
+      { internalType: 'string', name: 'feedbackURI', type: 'string' },
       { internalType: 'bytes32', name: 'feedbackHash', type: 'bytes32' },
-      { internalType: 'bytes', name: 'feedbackAuth', type: 'bytes' },
     ],
     name: 'giveFeedback',
     outputs: [],
@@ -213,7 +254,7 @@ export const REPUTATION_REGISTRY_ABI = [
       { internalType: 'uint256', name: 'agentId', type: 'uint256' },
       { internalType: 'address', name: 'clientAddress', type: 'address' },
       { internalType: 'uint64', name: 'feedbackIndex', type: 'uint64' },
-      { internalType: 'string', name: 'responseUri', type: 'string' },
+      { internalType: 'string', name: 'responseURI', type: 'string' },
       { internalType: 'bytes32', name: 'responseHash', type: 'bytes32' },
     ],
     name: 'appendResponse',
@@ -235,13 +276,13 @@ export const REPUTATION_REGISTRY_ABI = [
     inputs: [
       { internalType: 'uint256', name: 'agentId', type: 'uint256' },
       { internalType: 'address', name: 'clientAddress', type: 'address' },
-      { internalType: 'uint64', name: 'index', type: 'uint64' },
+      { internalType: 'uint64', name: 'feedbackIndex', type: 'uint64' },
     ],
     name: 'readFeedback',
     outputs: [
       { internalType: 'uint8', name: 'score', type: 'uint8' },
-      { internalType: 'bytes32', name: 'tag1', type: 'bytes32' },
-      { internalType: 'bytes32', name: 'tag2', type: 'bytes32' },
+      { internalType: 'string', name: 'tag1', type: 'string' },
+      { internalType: 'string', name: 'tag2', type: 'string' },
       { internalType: 'bool', name: 'isRevoked', type: 'bool' },
     ],
     stateMutability: 'view',
@@ -251,8 +292,8 @@ export const REPUTATION_REGISTRY_ABI = [
     inputs: [
       { internalType: 'uint256', name: 'agentId', type: 'uint256' },
       { internalType: 'address[]', name: 'clientAddresses', type: 'address[]' },
-      { internalType: 'bytes32', name: 'tag1', type: 'bytes32' },
-      { internalType: 'bytes32', name: 'tag2', type: 'bytes32' },
+      { internalType: 'string', name: 'tag1', type: 'string' },
+      { internalType: 'string', name: 'tag2', type: 'string' },
     ],
     name: 'getSummary',
     outputs: [
@@ -263,14 +304,46 @@ export const REPUTATION_REGISTRY_ABI = [
     type: 'function',
   },
   {
+    inputs: [
+      { internalType: 'uint256', name: 'agentId', type: 'uint256' },
+      { internalType: 'address[]', name: 'clientAddresses', type: 'address[]' },
+      { internalType: 'string', name: 'tag1', type: 'string' },
+      { internalType: 'string', name: 'tag2', type: 'string' },
+      { internalType: 'bool', name: 'includeRevoked', type: 'bool' },
+    ],
+    name: 'readAllFeedback',
+    outputs: [
+      { internalType: 'address[]', name: 'clients', type: 'address[]' },
+      { internalType: 'uint64[]', name: 'feedbackIndexes', type: 'uint64[]' },
+      { internalType: 'uint8[]', name: 'scores', type: 'uint8[]' },
+      { internalType: 'string[]', name: 'tag1s', type: 'string[]' },
+      { internalType: 'string[]', name: 'tag2s', type: 'string[]' },
+      { internalType: 'bool[]', name: 'revokedStatuses', type: 'bool[]' },
+    ],
+    stateMutability: 'view',
+    type: 'function',
+  },
+  {
+    inputs: [
+      { internalType: 'uint256', name: 'agentId', type: 'uint256' },
+    ],
+    name: 'getClients',
+    outputs: [{ internalType: 'address[]', name: '', type: 'address[]' }],
+    stateMutability: 'view',
+    type: 'function',
+  },
+  {
     anonymous: false,
     inputs: [
       { indexed: true, internalType: 'uint256', name: 'agentId', type: 'uint256' },
       { indexed: true, internalType: 'address', name: 'clientAddress', type: 'address' },
+      { indexed: false, internalType: 'uint64', name: 'feedbackIndex', type: 'uint64' },
       { indexed: false, internalType: 'uint8', name: 'score', type: 'uint8' },
-      { indexed: true, internalType: 'bytes32', name: 'tag1', type: 'bytes32' },
-      { indexed: false, internalType: 'bytes32', name: 'tag2', type: 'bytes32' },
-      { indexed: false, internalType: 'string', name: 'feedbackUri', type: 'string' },
+      { indexed: true, internalType: 'string', name: 'indexedTag1', type: 'string' },
+      { indexed: false, internalType: 'string', name: 'tag1', type: 'string' },
+      { indexed: false, internalType: 'string', name: 'tag2', type: 'string' },
+      { indexed: false, internalType: 'string', name: 'endpoint', type: 'string' },
+      { indexed: false, internalType: 'string', name: 'feedbackURI', type: 'string' },
       { indexed: false, internalType: 'bytes32', name: 'feedbackHash', type: 'bytes32' },
     ],
     name: 'NewFeedback',
@@ -313,14 +386,75 @@ export const VALIDATION_REGISTRY_ABI = [
     inputs: [
       { internalType: 'bytes32', name: 'requestHash', type: 'bytes32' },
       { internalType: 'uint8', name: 'response', type: 'uint8' },
-      { internalType: 'string', name: 'responseUri', type: 'string' },
+      { internalType: 'string', name: 'responseURI', type: 'string' },
       { internalType: 'bytes32', name: 'responseHash', type: 'bytes32' },
-      { internalType: 'bytes32', name: 'tag', type: 'bytes32' },
+      { internalType: 'string', name: 'tag', type: 'string' },
     ],
     name: 'validationResponse',
     outputs: [],
     stateMutability: 'nonpayable',
     type: 'function',
+  },
+  {
+    inputs: [
+      { internalType: 'bytes32', name: 'requestHash', type: 'bytes32' },
+    ],
+    name: 'getValidationStatus',
+    outputs: [
+      { internalType: 'address', name: 'validatorAddress', type: 'address' },
+      { internalType: 'uint256', name: 'agentId', type: 'uint256' },
+      { internalType: 'uint8', name: 'response', type: 'uint8' },
+      { internalType: 'string', name: 'tag', type: 'string' },
+      { internalType: 'uint256', name: 'lastUpdate', type: 'uint256' },
+    ],
+    stateMutability: 'view',
+    type: 'function',
+  },
+  {
+    inputs: [
+      { internalType: 'uint256', name: 'agentId', type: 'uint256' },
+      { internalType: 'address[]', name: 'validatorAddresses', type: 'address[]' },
+      { internalType: 'string', name: 'tag', type: 'string' },
+    ],
+    name: 'getSummary',
+    outputs: [
+      { internalType: 'uint64', name: 'count', type: 'uint64' },
+      { internalType: 'uint8', name: 'avgResponse', type: 'uint8' },
+    ],
+    stateMutability: 'view',
+    type: 'function',
+  },
+  {
+    inputs: [
+      { internalType: 'uint256', name: 'agentId', type: 'uint256' },
+    ],
+    name: 'getAgentValidations',
+    outputs: [{ internalType: 'bytes32[]', name: '', type: 'bytes32[]' }],
+    stateMutability: 'view',
+    type: 'function',
+  },
+  {
+    inputs: [
+      { internalType: 'address', name: 'validatorAddress', type: 'address' },
+    ],
+    name: 'getValidatorRequests',
+    outputs: [{ internalType: 'bytes32[]', name: '', type: 'bytes32[]' }],
+    stateMutability: 'view',
+    type: 'function',
+  },
+  {
+    anonymous: false,
+    inputs: [
+      { indexed: true, internalType: 'address', name: 'validatorAddress', type: 'address' },
+      { indexed: true, internalType: 'uint256', name: 'agentId', type: 'uint256' },
+      { indexed: true, internalType: 'bytes32', name: 'requestHash', type: 'bytes32' },
+      { indexed: false, internalType: 'uint8', name: 'response', type: 'uint8' },
+      { indexed: false, internalType: 'string', name: 'responseURI', type: 'string' },
+      { indexed: false, internalType: 'bytes32', name: 'responseHash', type: 'bytes32' },
+      { indexed: false, internalType: 'string', name: 'tag', type: 'string' },
+    ],
+    name: 'ValidationResponse',
+    type: 'event',
   },
 ] as const;
 
@@ -330,27 +464,10 @@ export const VALIDATION_REGISTRY_ABI = [
 export const DEFAULT_REGISTRIES: Record<ChainId, Record<string, string>> = {
   11155111: {
     // Ethereum Sepolia
-    IDENTITY: '0x8004a6090Cd10A7288092483047B097295Fb8847',
-    REPUTATION: '0x8004B8FD1A363aa02fDC07635C0c5F94f6Af5B7E',
-    VALIDATION: '0x8004CB39f29c09145F24Ad9dDe2A108C1A2cdfC5',
-  },
-  84532: {
-    // Base Sepolia
-    IDENTITY: '0x8004AA63c570c570eBF15376c0dB199918BFe9Fb',
-    REPUTATION: '0x8004bd8daB57f14Ed299135749a5CB5c42d341BF',
-    VALIDATION: '0x8004C269D0A5647E51E121FeB226200ECE932d55',
-  },
-  59141: {
-    // Linea Sepolia
-    IDENTITY: '0x8004aa7C931bCE1233973a0C6A667f73F66282e7',
-    REPUTATION: '0x8004bd8483b99310df121c46ED8858616b2Bba02',
-    VALIDATION: '0x8004c44d1EFdd699B2A26e781eF7F77c56A9a4EB',
-  },
-  80002: {
-    // Polygon Amoy
-    IDENTITY: '0x8004ad19E14B9e0654f73353e8a0B600D46C2898',
-    REPUTATION: '0x8004B12F4C2B42d00c46479e859C92e39044C930',
-    VALIDATION: '0x8004C11C213ff7BaD36489bcBDF947ba5eee289B',
+    // Aligned with Python SDK (agent0-py) defaults
+    IDENTITY: '0x8004A818BFB912233c491871b3d84c89A494BD9e',
+    REPUTATION: '0x8004B663056A597Dffe9eCcC1965A193B7388713',
+    // VALIDATION: not deployed in Python defaults yet
   },
 };
 
@@ -360,9 +477,5 @@ export const DEFAULT_REGISTRIES: Record<ChainId, Record<string, string>> = {
 export const DEFAULT_SUBGRAPH_URLS: Record<ChainId, string> = {
   11155111:
     'https://gateway.thegraph.com/api/00a452ad3cd1900273ea62c1bf283f93/subgraphs/id/6wQRC7geo9XYAhckfmfo8kbMRLeWU8KQd3XsJqFKmZLT', // Ethereum Sepolia
-  84532:
-    'https://gateway.thegraph.com/api/00a452ad3cd1900273ea62c1bf283f93/subgraphs/id/GjQEDgEKqoh5Yc8MUgxoQoRATEJdEiH7HbocfR1aFiHa', // Base Sepolia
-  80002:
-    'https://gateway.thegraph.com/api/00a452ad3cd1900273ea62c1bf283f93/subgraphs/id/2A1JB18r1mF2VNP4QBH4mmxd74kbHoM6xLXC8ABAKf7j', // Polygon Amoy
 };
 

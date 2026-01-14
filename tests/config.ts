@@ -7,9 +7,11 @@ import * as dotenv from 'dotenv';
 import * as path from 'path';
 
 // Load environment variables from .env file
-// Look for .env in parent directory (project root)
-const envPath = path.join(__dirname, '../../.env');
-dotenv.config({ path: envPath });
+// Prefer agent0-ts/.env (project root), with fallback to monorepo root .env
+const localEnvPath = path.join(__dirname, '../.env');
+const monorepoEnvPath = path.join(__dirname, '../../.env');
+dotenv.config({ path: localEnvPath });
+dotenv.config({ path: monorepoEnvPath, override: false });
 
 // Chain Configuration
 export const CHAIN_ID = parseInt(process.env.CHAIN_ID || '11155111', 10);

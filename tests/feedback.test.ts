@@ -1,17 +1,17 @@
 /**
  * Integration test for Agent Feedback Flow with IPFS Pin
- * Submits feedback from a client to an existing agent and verifies data integrity.
+ * Submits feedback from a client to a freshly-registered agent and verifies data integrity.
  *
  * Flow:
- * 1. Load existing agent by ID
- * 2. Client submits multiple feedback entries
+ * 1. Create and register a new agent (so the test doesn't rely on a hardcoded agentId)
+ * 2. Client submits one or more feedback entries
  * 3. Verify feedback data consistency (score, tags, capability, skill)
  * 4. Wait for blockchain finalization
- * 5. Verify feedback can be retrieved (if SDK supports it)
+ * 5. Verify feedback can be retrieved and searched
  */
 
 import { SDK } from '../src/index';
-import { CHAIN_ID, RPC_URL, AGENT_PRIVATE_KEY, PINATA_JWT, AGENT_ID, CLIENT_PRIVATE_KEY, printConfig } from './config';
+import { CHAIN_ID, RPC_URL, AGENT_PRIVATE_KEY, PINATA_JWT, CLIENT_PRIVATE_KEY, printConfig } from './config';
 
 // Client configuration (different wallet)
 // Must be set in .env file
@@ -52,41 +52,62 @@ function generateFeedbackData(index: number) {
 describe('Agent Feedback Flow with IPFS Pin', () => {
   let agentSdk: SDK;
   let clientSdk: SDK;
-  let agentSdkWithSigner: SDK;
+  let agentSdkWithSigner: SDK | undefined;
   let clientAddress: string;
-  const agentId = AGENT_ID;
+  let agentId: string;
+  let feedbackSubmitted = false;
+  let submittedFeedbackIndex: number | undefined;
 
   beforeAll(() => {
     printConfig();
   });
 
-  it('should load existing agent', async () => {
-    // SDK Configuration
+  it('should create and register an agent for feedback tests', async () => {
+    // Use a signer so we can mint; keep IPFS configured since feedback files are stored on IPFS.
     const sdkConfig = {
       chainId: CHAIN_ID,
       rpcUrl: RPC_URL,
       ipfs: 'pinata' as const,
       pinataJwt: PINATA_JWT,
+      signer: AGENT_PRIVATE_KEY,
     };
 
-    agentSdk = new SDK(sdkConfig); // Read-only for loading
+    agentSdkWithSigner = new SDK(sdkConfig);
+    if (!agentSdkWithSigner.web3Client.signer) {
+      throw new Error('Failed to initialize agent signer. Check AGENT_PRIVATE_KEY in .env file.');
+    }
 
-    const agent = await agentSdk.loadAgent(agentId);
-    expect(agent.name).toBeTruthy();
+    // Also keep a read-only instance (used by some code paths)
+    agentSdk = new SDK({
+      chainId: CHAIN_ID,
+      rpcUrl: RPC_URL,
+      ipfs: 'pinata' as const,
+      pinataJwt: PINATA_JWT,
+    });
+
+    const unique = Math.floor(Math.random() * 1_000_000);
+    const agent = agentSdkWithSigner.createAgent(
+      `Feedback Test Agent ${unique}`,
+      `Feedback test agent created at ${Math.floor(Date.now() / 1000)}`,
+      `https://example.com/feedback_test_${unique}.png`
+    );
+
+    // Register via HTTP URI (fast, no dependency on loading the file back)
+    const mockUri = `https://example.com/agents/feedback_test_${unique}.json`;
+    const reg = await agent.registerHTTP(mockUri);
+    agentId = reg.agentId!;
+
+    expect(agentId).toBeTruthy();
     expect(agent.agentId).toBe(agentId);
   });
 
-  it('should sign feedback authorization', async () => {
+  it('should initialize client SDK', async () => {
     const sdkConfig = {
       chainId: CHAIN_ID,
       rpcUrl: RPC_URL,
       ipfs: 'pinata' as const,
       pinataJwt: PINATA_JWT,
     };
-
-    if (!AGENT_PRIVATE_KEY || AGENT_PRIVATE_KEY.trim() === '') {
-      throw new Error('AGENT_PRIVATE_KEY is required for feedback tests. Set it in .env file.');
-    }
 
     clientSdk = new SDK({ ...sdkConfig, signer: clientPrivateKey });
     if (!clientSdk.web3Client.signer) {
@@ -97,20 +118,14 @@ describe('Agent Feedback Flow with IPFS Pin', () => {
       throw new Error('Failed to get client address from signer.');
     }
 
-    // Agent SDK needs to be initialized with signer for signing feedback auth
-    agentSdkWithSigner = new SDK({ ...sdkConfig, signer: AGENT_PRIVATE_KEY });
-    if (!agentSdkWithSigner.web3Client.signer) {
-      throw new Error('Failed to initialize agent signer. Check AGENT_PRIVATE_KEY in .env file.');
-    }
-
-    // Sign feedback authorization
-    const feedbackAuth = await agentSdkWithSigner.signFeedbackAuth(agentId, clientAddress, undefined, 24);
-    expect(feedbackAuth).toBeTruthy();
-    expect(feedbackAuth.length).toBeGreaterThan(0);
+    // Note: feedbackAuth is no longer required in ERC-8004 Jan 2026 spec
+    // Clients can now submit feedback directly without pre-authorization
   });
 
+  // agentSdkWithSigner is initialized as part of agent registration above
+
   it('should submit feedback with IPFS storage', async () => {
-    if (!clientSdk || !agentSdkWithSigner || !clientAddress) {
+    if (!clientSdk || !clientAddress) {
       throw new Error('Required SDKs not initialized. Previous tests must pass first.');
     }
 
@@ -124,27 +139,32 @@ describe('Agent Feedback Flow with IPFS Pin', () => {
     for (let i = 0; i < numFeedback; i++) {
       const feedbackData = generateFeedbackData(i + 1);
 
-      // Prepare feedback file
-      const feedbackFile = clientSdk.prepareFeedback(
-        agentId,
-        feedbackData.score,
-        feedbackData.tags,
-        undefined, // text
-        feedbackData.capability,
-        undefined, // name
-        feedbackData.skill,
-        undefined, // task
-        { context: feedbackData.context }
-      );
+      const tag1 = feedbackData.tags[0];
+      const tag2 = feedbackData.tags[1];
+      const endpoint = 'https://example.com/feedback'; // optional on-chain field
 
-      // Sign feedback authorization
-      const feedbackAuth = await agentSdkWithSigner.signFeedbackAuth(agentId, clientAddress, undefined, 24);
+      // Prepare off-chain feedback file (rich fields stored off-chain)
+      const feedbackFile = clientSdk.prepareFeedbackFile({
+        capability: feedbackData.capability,
+        skill: feedbackData.skill,
+        context: { context: feedbackData.context },
+      });
 
       // Submit feedback - this will fail if client wallet has insufficient funds
-      const feedback = await clientSdk.giveFeedback(agentId, feedbackFile, feedbackAuth);
+      // Note: feedbackAuth is no longer required in ERC-8004 Jan 2026 spec
+      const feedback = await clientSdk.giveFeedback(
+        agentId,
+        feedbackData.score,
+        tag1,
+        tag2,
+        endpoint,
+        feedbackFile
+      );
 
       // Extract actual feedback index from the returned Feedback object
       const actualFeedbackIndex = feedback.id[2];
+      feedbackSubmitted = true;
+      submittedFeedbackIndex = actualFeedbackIndex;
 
       feedbackEntries.push({
         index: actualFeedbackIndex,
@@ -167,10 +187,13 @@ describe('Agent Feedback Flow with IPFS Pin', () => {
     if (!agentSdkWithSigner || !clientAddress) {
       throw new Error('Required SDKs not initialized. Previous tests must pass first.');
     }
+    if (!feedbackSubmitted || submittedFeedbackIndex === undefined) {
+      throw new Error('No feedback was successfully submitted in previous test');
+    }
 
     // This test assumes feedback was submitted in previous test
     // The feedback index should be 1 if feedback was successfully submitted
-    const feedbackIndex = 1;
+    const feedbackIndex = submittedFeedbackIndex;
 
     const responseUri = 'ipfs://QmExampleResponse';
     const responseHash = '0x' + '00'.repeat(32);
@@ -188,11 +211,14 @@ describe('Agent Feedback Flow with IPFS Pin', () => {
     if (!agentSdkWithSigner || !clientAddress) {
       throw new Error('Required SDKs not initialized. Previous tests must pass first.');
     }
+    if (!feedbackSubmitted || submittedFeedbackIndex === undefined) {
+      throw new Error('No feedback was successfully submitted in previous test');
+    }
 
     // Wait for blockchain and subgraph
     await new Promise((resolve) => setTimeout(resolve, 15000)); // 15 seconds
 
-    const feedbackIndex = 1; // Should match the feedback submitted in previous test
+    const feedbackIndex = submittedFeedbackIndex; // Should match the feedback submitted in previous test
 
     // This will fail if feedback doesn't exist (index out of bounds)
     const retrievedFeedback = await agentSdkWithSigner.getFeedback(agentId, clientAddress, feedbackIndex);
@@ -211,26 +237,28 @@ describe('Agent Feedback Flow with IPFS Pin', () => {
     await new Promise((resolve) => setTimeout(resolve, 60000)); // 60 seconds
 
     // Search by capability
-    const capabilityResults = await agentSdkWithSigner.searchFeedback(agentId, undefined, ['data_analysis']);
+    const capabilityResults = await agentSdkWithSigner.searchFeedback({
+      agentId,
+      capabilities: ['data_analysis'],
+    });
     expect(Array.isArray(capabilityResults)).toBe(true);
 
     // Search by skill
-    const skillResults = await agentSdkWithSigner.searchFeedback(agentId, undefined, undefined, ['python']);
+    const skillResults = await agentSdkWithSigner.searchFeedback({
+      agentId,
+      skills: ['python'],
+    });
     expect(Array.isArray(skillResults)).toBe(true);
 
     // Search by tags
-    const tagResults = await agentSdkWithSigner.searchFeedback(agentId, ['enterprise']);
+    const tagResults = await agentSdkWithSigner.searchFeedback({
+      agentId,
+      tags: ['enterprise'],
+    });
     expect(Array.isArray(tagResults)).toBe(true);
 
     // Search by score range
-    const scoreResults = await agentSdkWithSigner.searchFeedback(
-      agentId,
-      undefined,
-      undefined,
-      undefined,
-      75,
-      95
-    );
+    const scoreResults = await agentSdkWithSigner.searchFeedback({ agentId }, { minScore: 75, maxScore: 95 });
     expect(Array.isArray(scoreResults)).toBe(true);
   });
 });

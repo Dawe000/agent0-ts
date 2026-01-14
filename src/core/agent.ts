@@ -178,6 +178,49 @@ export class Agent {
     return this;
   }
 
+  /**
+   * Remove endpoint(s) with wildcard semantics (parity with Python SDK).
+   *
+   * - If no args are provided, removes all endpoints.
+   * - If only `type` is provided, removes all endpoints of that type.
+   * - If only `value` is provided, removes all endpoints with that value.
+   * - If both are provided, removes endpoints that match both.
+   */
+  removeEndpoint(): this;
+  removeEndpoint(opts: { type?: EndpointType; value?: string }): this;
+  removeEndpoint(type?: EndpointType, value?: string): this;
+  removeEndpoint(
+    arg1?: EndpointType | { type?: EndpointType; value?: string },
+    arg2?: string
+  ): this {
+    const { type, value } =
+      arg1 && typeof arg1 === 'object'
+        ? { type: arg1.type, value: arg1.value }
+        : { type: arg1 as EndpointType | undefined, value: arg2 };
+
+    if (type === undefined && value === undefined) {
+      // Remove all endpoints
+      this.registrationFile.endpoints = [];
+    } else {
+      // Remove matching endpoints (wildcard semantics)
+      this.registrationFile.endpoints = this.registrationFile.endpoints.filter((ep) => {
+        const typeMatches = type === undefined || ep.type === type;
+        const valueMatches = value === undefined || ep.value === value;
+        return !(typeMatches && valueMatches);
+      });
+    }
+
+    this.registrationFile.updatedAt = Math.floor(Date.now() / 1000);
+    return this;
+  }
+
+  /**
+   * Remove all endpoints.
+   */
+  removeEndpoints(): this {
+    return this.removeEndpoint();
+  }
+
   // OASF endpoint management
   private _getOrCreateOasfEndpoint(): Endpoint {
     // Find existing OASF endpoint
@@ -322,17 +365,279 @@ export class Agent {
     return this;
   }
 
-  setAgentWallet(address: Address, chainId: number): this {
-    this.registrationFile.walletAddress = address;
-    this.registrationFile.walletChainId = chainId;
-
-    // Check if wallet changed
-    if (address !== this._lastRegisteredWallet) {
-      this._dirtyMetadata.add('agentWallet');
+  /**
+   * Set agent wallet on-chain with EIP-712 signature verification (ERC-8004 Jan 2026).
+   *
+   * This is a clean breaking API: it is on-chain only.
+   * If the agent is not registered yet, this throws.
+   */
+  async setAgentWallet(
+    newWallet: Address,
+    opts?: {
+      deadline?: number;
+      newWalletSigner?: string | ethers.Signer;
+      signature?: string | Uint8Array;
+    }
+  ): Promise<string> {
+    if (!this.registrationFile.agentId) {
+      throw new Error(
+        'Agent must be registered before setting agentWallet on-chain. ' +
+          'Register the agent first, then call setAgentWallet().'
+      );
     }
 
+    if (!this.sdk.web3Client.signer) {
+      throw new Error('No SDK signer available to submit setAgentWallet transaction');
+    }
+
+    // Validate newWallet address
+    if (!this.sdk.web3Client.isAddress(newWallet)) {
+      throw new Error(`Invalid newWallet address: ${newWallet}`);
+    }
+
+    const { tokenId } = parseAgentId(this.registrationFile.agentId);
+    const identityRegistry = this.sdk.getIdentityRegistry();
+
+    // Optional short-circuit if already set
+    try {
+      const currentWallet = await this.sdk.web3Client.callContract(
+        identityRegistry,
+        'getAgentWallet',
+        BigInt(tokenId)
+      );
+      if (
+        typeof currentWallet === 'string' &&
+        currentWallet.toLowerCase() === newWallet.toLowerCase()
+      ) {
+        const chainId = await this.sdk.chainId();
+        this.registrationFile.walletAddress = newWallet;
+    this.registrationFile.walletChainId = chainId;
+        this.registrationFile.updatedAt = Math.floor(Date.now() / 1000);
+        return '';
+      }
+    } catch {
+      // ignore and proceed
+    }
+
+    // Deadline: contract enforces a short window. Use chain time (latest block timestamp)
+    // rather than local system time to avoid clock skew causing reverts.
+    const latestBlock = await this.sdk.web3Client.provider.getBlock('latest');
+    const chainNow = latestBlock?.timestamp ?? Math.floor(Date.now() / 1000);
+    const deadlineValue = opts?.deadline ?? chainNow + 60;
+    if (deadlineValue < chainNow) {
+      throw new Error(`Invalid deadline: ${deadlineValue} is in the past (chain time: ${chainNow})`);
+    }
+    if (deadlineValue > chainNow + 300) {
+      throw new Error(
+        `Invalid deadline: ${deadlineValue} is too far in the future. ` +
+          `ERC-8004 setAgentWallet requires a short deadline (<= chainTime + 300s). ` +
+          `(chain time: ${chainNow})`
+      );
+    }
+
+    const chainId = await this.sdk.chainId();
+    const verifyingContract = await identityRegistry.getAddress();
+    const owner = await this.sdk.web3Client.callContract(
+      identityRegistry,
+      'ownerOf',
+      BigInt(tokenId)
+    );
+    
+    // Prefer reading the actual EIP-712 domain from the contract (if supported)
+    // to avoid any future divergence in name/version.
+    let domainName: string | undefined;
+    let domainVersion: string | undefined;
+    try {
+      const domainInfo = await this.sdk.web3Client.callContract(identityRegistry, 'eip712Domain');
+      // eip712Domain() returns: (fields, name, version, chainId, verifyingContract, salt, extensions)
+      // In ethers v6 this is typically a Result array-like object.
+      domainName = domainInfo?.name ?? domainInfo?.[1];
+      domainVersion = domainInfo?.version ?? domainInfo?.[2];
+    } catch {
+      // ignore and use defaults
+    }
+
+    // If the contract exposes a domain separator, try to select a matching (name, version)
+    // deterministically from common candidates.
+    let domainSeparatorOnChain: string | undefined;
+    try {
+      domainSeparatorOnChain = await this.sdk.web3Client.callContract(identityRegistry, 'DOMAIN_SEPARATOR');
+    } catch {
+      // ignore
+    }
+
+    // Preflight estimateGas to catch signature/domain/type mismatches early.
+    const estimateSetAgentWallet = async (sig: string) => {
+      const fn = (identityRegistry as any).getFunction
+        ? (identityRegistry as any).getFunction('setAgentWallet')
+        : null;
+      if (fn?.estimateGas) {
+        await fn.estimateGas(BigInt(tokenId), newWallet, BigInt(deadlineValue), sig);
+      } else if ((identityRegistry as any).estimateGas?.setAgentWallet) {
+        await (identityRegistry as any).estimateGas.setAgentWallet(
+          BigInt(tokenId),
+          newWallet,
+          BigInt(deadlineValue),
+          sig
+        );
+      }
+    };
+
+    // Determine signature
+    let signature: string | undefined;
+    if (opts?.signature) {
+      signature =
+        typeof opts.signature === 'string' ? opts.signature : ethers.hexlify(opts.signature);
+      if (!signature.startsWith('0x')) {
+        signature = `0x${signature}`;
+      }
+    } else {
+      // The new wallet MUST sign (EOA path). Support a few domain/type variants to match deployed registries.
+      const signerForNewWallet: string | ethers.Signer | undefined = opts?.newWalletSigner;
+      const sdkSignerAddress = await this.sdk.web3Client.getAddress();
+
+      // If no explicit signer was provided, allow the one-wallet case (SDK signer == newWallet)
+      if (!signerForNewWallet) {
+        if (!sdkSignerAddress || sdkSignerAddress.toLowerCase() !== newWallet.toLowerCase()) {
+          throw new Error(
+            `The new wallet must sign the EIP-712 message. ` +
+              `Pass opts.newWalletSigner (private key or Signer) or opts.signature. ` +
+              `SDK signer is ${sdkSignerAddress || 'unknown'}, newWallet is ${newWallet}.`
+          );
+        }
+      } else {
+        const signerAddress = await this.sdk.web3Client.addressOf(signerForNewWallet as any);
+        if (signerAddress.toLowerCase() !== newWallet.toLowerCase()) {
+          throw new Error(
+            `newWalletSigner address (${signerAddress}) does not match newWallet (${newWallet}).`
+          );
+        }
+      }
+
+      const domainNames: string[] = [];
+      if (domainName) domainNames.push(domainName);
+      // Common known names across deployments/spec revisions
+      domainNames.push('ERC8004IdentityRegistry', 'IdentityRegistry', 'ERC8004IdentityRegistryUpgradeable', 'IdentityRegistryUpgradeable');
+      const domainVersions = [domainVersion || '1', '1'];
+
+      // If we have a domain separator, prefer the (name, version) that matches it.
+      if (domainSeparatorOnChain) {
+        const match = domainNames.flatMap((dn) =>
+          domainVersions.map((dv) => ({ dn, dv }))
+        ).find(({ dn, dv }) => {
+          try {
+            const computed = ethers.TypedDataEncoder.hashDomain({
+              name: dn,
+              version: dv,
+              chainId,
+              verifyingContract,
+            });
+            return computed.toLowerCase() === String(domainSeparatorOnChain).toLowerCase();
+          } catch {
+            return false;
+          }
+        });
+        if (match) {
+          domainNames.unshift(match.dn);
+          domainVersions.unshift(match.dv);
+        }
+      }
+
+      // Try (with owner) first, then (no owner) legacy; and try each domain name.
+      const variants: Array<{ domain: any; types: any; message: any }> = [];
+      for (const dn of domainNames) {
+        for (const dv of domainVersions) {
+          variants.push(
+            this.sdk.web3Client.buildAgentWalletSetTypedData({
+              agentId: BigInt(tokenId),
+              newWallet,
+              owner,
+              deadline: BigInt(deadlineValue),
+              chainId,
+              verifyingContract,
+              domainName: dn,
+              domainVersion: dv,
+            })
+          );
+          variants.push(
+            this.sdk.web3Client.buildAgentWalletSetTypedDataNoOwner({
+              agentId: BigInt(tokenId),
+              newWallet,
+              deadline: BigInt(deadlineValue),
+              chainId,
+              verifyingContract,
+              domainName: dn,
+              domainVersion: dv,
+            })
+          );
+        }
+      }
+
+      let lastError: unknown;
+      const trySignAndEstimate = async (signerMode: 'newWallet' | 'owner') => {
+        for (const v of variants) {
+          try {
+            const sig =
+              signerMode === 'newWallet'
+                ? signerForNewWallet
+                  ? await this.sdk.web3Client.signTypedDataWith(
+                      signerForNewWallet as any,
+                      v.domain,
+                      v.types,
+                      v.message
+                    )
+                  : await this.sdk.web3Client.signTypedData(v.domain, v.types, v.message)
+                : await this.sdk.web3Client.signTypedData(v.domain, v.types, v.message);
+
+            const recovered = this.sdk.web3Client.recoverTypedDataSigner(v.domain, v.types, v.message, sig);
+            const expected =
+              signerMode === 'newWallet' ? newWallet.toLowerCase() : (sdkSignerAddress || '').toLowerCase();
+            if (!expected || recovered.toLowerCase() !== expected) {
+              throw new Error(
+                `EIP-712 signature recovery mismatch (${signerMode} signing): recovered ${recovered} but expected ${expected || 'unknown'}`
+              );
+            }
+
+            await estimateSetAgentWallet(sig);
+            signature = sig;
+            return;
+          } catch (e) {
+            lastError = e;
+          }
+        }
+      };
+
+      // Preferred: newWallet signs (spec-aligned)
+      await trySignAndEstimate('newWallet');
+
+      // Fallback: some legacy deployments may require the agent owner (tx sender) to sign instead.
+      if (!signature && sdkSignerAddress) {
+        await trySignAndEstimate('owner');
+      }
+
+      if (!signature) {
+        const msg = lastError instanceof Error ? lastError.message : String(lastError);
+        throw new Error(`Failed to produce a valid setAgentWallet signature for this registry: ${msg}`);
+      }
+    }
+
+    // Call contract function (tx sender is SDK signer: owner/operator)
+    const txHash = await this.sdk.web3Client.transactContract(
+      identityRegistry,
+      'setAgentWallet',
+      {},
+      BigInt(tokenId),
+      newWallet,
+      BigInt(deadlineValue),
+      signature
+    );
+
+    // Update local registration file
+    this.registrationFile.walletAddress = newWallet;
+    this.registrationFile.walletChainId = chainId;
     this.registrationFile.updatedAt = Math.floor(Date.now() / 1000);
-    return this;
+
+    return txHash;
   }
 
   setActive(active: boolean): this {
@@ -444,7 +749,7 @@ export class Agent {
       
       const txHash = await this.sdk.web3Client.transactContract(
         this.sdk.getIdentityRegistry(),
-        'setAgentUri',
+        'setAgentURI',
         {},
         BigInt(tokenId),
         `ipfs://${ipfsCid}`
@@ -454,7 +759,7 @@ export class Agent {
       // If timeout, continue - transaction was sent and will eventually confirm
       try {
         await this.sdk.web3Client.waitForTransaction(txHash, TIMEOUTS.TRANSACTION_WAIT);
-      } catch (error) {
+      } catch {
         // Transaction was sent and will eventually confirm - continue silently
       }
 
@@ -483,7 +788,7 @@ export class Agent {
       const { tokenId } = parseAgentId(this.registrationFile.agentId!);
       const txHash = await this.sdk.web3Client.transactContract(
         this.sdk.getIdentityRegistry(),
-        'setAgentUri',
+        'setAgentURI',
         {},
         BigInt(tokenId),
         `ipfs://${ipfsCid}`
@@ -513,7 +818,7 @@ export class Agent {
 
     if (this.registrationFile.agentId) {
       // Agent already registered - update agent URI
-      await this.setAgentUri(agentUri);
+      await this.setAgentURI(agentUri);
       return this.registrationFile;
     } else {
       // First time registration
@@ -524,7 +829,7 @@ export class Agent {
   /**
    * Set agent URI (for updates)
    */
-  async setAgentUri(agentUri: string): Promise<void> {
+  async setAgentURI(agentURI: string): Promise<void> {
     if (!this.registrationFile.agentId) {
       throw new Error('Agent must be registered before setting URI');
     }
@@ -532,13 +837,13 @@ export class Agent {
     const { tokenId } = parseAgentId(this.registrationFile.agentId);
     await this.sdk.web3Client.transactContract(
       this.sdk.getIdentityRegistry(),
-      'setAgentUri',
+      'setAgentURI',
       {},
       BigInt(tokenId),
-      agentUri
+      agentURI
     );
 
-    this.registrationFile.agentURI = agentUri;
+    this.registrationFile.agentURI = agentURI;
     this.registrationFile.updatedAt = Math.floor(Date.now() / 1000);
   }
 
@@ -672,14 +977,14 @@ export class Agent {
     // Update metadata one by one (like Python SDK)
     // Only send transactions for dirty (changed) metadata keys
     for (const entry of metadataEntries) {
-      if (this._dirtyMetadata.has(entry.key)) {
+      if (this._dirtyMetadata.has(entry.metadataKey)) {
         const txHash = await this.sdk.web3Client.transactContract(
           identityRegistry,
           'setMetadata',
           {},
           BigInt(tokenId),
-          entry.key,
-          entry.value
+          entry.metadataKey,
+          entry.metadataValue
         );
 
         // Wait with 30 second timeout (like Python SDK)
@@ -693,20 +998,20 @@ export class Agent {
     }
   }
 
-  private _collectMetadataForRegistration(): Array<{ key: string; value: Uint8Array }> {
-    const entries: Array<{ key: string; value: Uint8Array }> = [];
+  private _collectMetadataForRegistration(): Array<{ metadataKey: string; metadataValue: Uint8Array }> {
+    const entries: Array<{ metadataKey: string; metadataValue: Uint8Array }> = [];
 
-    // Collect wallet address if set
-    if (this.registrationFile.walletAddress && this.registrationFile.walletChainId) {
-      const walletValue = `eip155:${this.registrationFile.walletChainId}:${this.registrationFile.walletAddress}`;
-      entries.push({
-        key: 'agentWallet',
-        value: new TextEncoder().encode(walletValue),
-      });
-    }
+    // Note: agentWallet is now a reserved metadata key that cannot be set via setMetadata()
+    // It must be set using setAgentWallet() with EIP-712 signature verification
+    // We do not include it in metadata entries here
 
     // Collect custom metadata
     for (const [key, value] of Object.entries(this.registrationFile.metadata)) {
+      // Skip agentWallet if it somehow got into metadata
+      if (key === 'agentWallet') {
+        continue;
+      }
+
       let valueBytes: Uint8Array;
       if (typeof value === 'string') {
         valueBytes = new TextEncoder().encode(value);
@@ -716,7 +1021,7 @@ export class Agent {
         valueBytes = new TextEncoder().encode(JSON.stringify(value));
       }
 
-      entries.push({ key, value: valueBytes });
+      entries.push({ metadataKey: key, metadataValue: valueBytes });
     }
 
     return entries;

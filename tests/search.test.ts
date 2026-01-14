@@ -18,9 +18,12 @@ describe('Agent Search and Discovery', () => {
     });
   });
 
+  // Note: AGENT_ID is exported by tests/config.ts for convenience, but this test suite
+  // does not rely on a fixed hardcoded agentId. It discovers agents via subgraph queries.
+
   it('should get agent by ID', async () => {
     // Search for any available agent first - use pageSize like Python test
-    const results = await sdk.searchAgents({}, undefined, 5); // pageSize=5 like Python
+    const results = await sdk.searchAgents({}, { pageSize: 5 }); // pageSize=5 like Python
     expect(results.items.length).toBeGreaterThan(0);
     
     const firstAgent = results.items[0];
@@ -84,7 +87,7 @@ describe('Agent Search and Discovery', () => {
   });
 
   it('should search only active agents', async () => {
-    const results = await sdk.searchAgents({ active: true }, undefined, 10);
+    const results = await sdk.searchAgents({ active: true }, { pageSize: 10 });
     expect(results.items.length).toBeGreaterThanOrEqual(0);
 
     results.items.forEach((agent) => {
@@ -105,25 +108,16 @@ describe('Agent Search and Discovery', () => {
   });
 
   it('should search agents by reputation', async () => {
-    const results = await sdk.searchAgentsByReputation(
-      undefined, // agents
-      undefined, // tags
-      undefined, // reviewers
-      undefined, // capabilities
-      undefined, // skills
-      undefined, // tasks
-      undefined, // names
-      80 // minAverageScore
-    );
+    const results = await sdk.searchAgentsByReputation({ minAverageScore: 80 });
     expect(results.items.length).toBeGreaterThanOrEqual(0);
   });
 
   it('should handle pagination', async () => {
-    const page1 = await sdk.searchAgents({ active: true }, undefined, 5);
+    const page1 = await sdk.searchAgents({ active: true }, { pageSize: 5 });
     expect(page1.items.length).toBeLessThanOrEqual(5);
 
     if (page1.nextCursor && page1.items.length > 0) {
-      const page2 = await sdk.searchAgents({ active: true }, undefined, 5, page1.nextCursor);
+      const page2 = await sdk.searchAgents({ active: true }, { pageSize: 5, cursor: page1.nextCursor });
       expect(page2.items.length).toBeGreaterThanOrEqual(0);
 
       // Verify no duplicates between pages (only if we have results)
@@ -138,7 +132,7 @@ describe('Agent Search and Discovery', () => {
 
   it('should search agents by single owner address', async () => {
     // First get a sample agent with an owner
-    const allAgents = await sdk.searchAgents({}, undefined, 10);
+    const allAgents = await sdk.searchAgents({}, { pageSize: 10 });
     expect(allAgents.items.length).toBeGreaterThan(0);
 
     const agentWithOwner = allAgents.items.find(a => a.owners && a.owners.length > 0);
@@ -164,7 +158,7 @@ describe('Agent Search and Discovery', () => {
 
   it('should search agents by multiple owner addresses', async () => {
     // Get sample agents with owners
-    const allAgents = await sdk.searchAgents({}, undefined, 20);
+    const allAgents = await sdk.searchAgents({}, { pageSize: 20 });
     const agentsWithOwners = allAgents.items.filter(a => a.owners && a.owners.length > 0);
 
     if (agentsWithOwners.length < 2) {
@@ -191,7 +185,7 @@ describe('Agent Search and Discovery', () => {
 
   it('should search agents by operator addresses', async () => {
     // First get a sample agent with an operator
-    const allAgents = await sdk.searchAgents({}, undefined, 50);
+    const allAgents = await sdk.searchAgents({}, { pageSize: 50 });
     const agentWithOperator = allAgents.items.find(a => a.operators && a.operators.length > 0);
 
     if (!agentWithOperator) {

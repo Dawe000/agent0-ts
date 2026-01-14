@@ -58,11 +58,7 @@ describe('Multi-Chain Agent Operations', () => {
       for (const chainId of SUPPORTED_CHAINS) {
         try {
           // First, search for agents on this chain to get a real agent ID
-          const searchResult = await sdk.searchAgents(
-            { chains: [chainId] },
-            [],
-            1
-          );
+          const searchResult = await sdk.searchAgents({ chains: [chainId] }, { sort: [], pageSize: 1 });
 
           if (searchResult.items && searchResult.items.length > 0) {
             const agentSummary = searchResult.items[0];
@@ -102,11 +98,7 @@ describe('Multi-Chain Agent Operations', () => {
 
       try {
         // Test with just agentId (uses SDK's default chain)
-        const searchResult = await sdk.searchAgents(
-          { chains: [CHAIN_ID] },
-          [],
-          1
-        );
+        const searchResult = await sdk.searchAgents({ chains: [CHAIN_ID] }, { sort: [], pageSize: 1 });
 
         if (searchResult.items && searchResult.items.length > 0) {
           const agentItem = searchResult.items[0];
@@ -146,11 +138,7 @@ describe('Multi-Chain Agent Operations', () => {
             testAgentId = TEST_AGENTS_WITH_FEEDBACK[chainId][0];
           } else {
             // Fallback: search for any agent
-            const searchResult = await sdk.searchAgents(
-              { chains: [chainId] },
-              [],
-              1
-            );
+            const searchResult = await sdk.searchAgents({ chains: [chainId] }, { sort: [], pageSize: 1 });
 
             if (searchResult.items && searchResult.items.length > 0) {
               const agentSummary = searchResult.items[0];
@@ -168,7 +156,7 @@ describe('Multi-Chain Agent Operations', () => {
 
           if (testAgentId) {
             // Test searchFeedback with chainId:agentId format
-            const feedbacks = await sdk.searchFeedback(testAgentId, undefined, undefined, undefined, undefined, undefined);
+            const feedbacks = await sdk.searchFeedback({ agentId: testAgentId });
 
             console.log(`✅ Chain ${chainId}: Found ${feedbacks.length} feedback entries`);
             console.log(`   Agent ID: ${testAgentId}`);
@@ -203,11 +191,7 @@ describe('Multi-Chain Agent Operations', () => {
           testAgentId = fullId.includes(':') ? fullId.split(':').pop()! : fullId;
         } else {
           // Fallback: search for any agent
-          const searchResult = await sdk.searchAgents(
-            { chains: [CHAIN_ID] },
-            [],
-            1
-          );
+          const searchResult = await sdk.searchAgents({ chains: [CHAIN_ID] }, { sort: [], pageSize: 1 });
 
           if (searchResult.items && searchResult.items.length > 0) {
             const agentItem = searchResult.items[0];
@@ -222,7 +206,7 @@ describe('Multi-Chain Agent Operations', () => {
         }
 
         if (testAgentId) {
-          const feedbacks = await sdk.searchFeedback(testAgentId, undefined, undefined, undefined, undefined, undefined);
+          const feedbacks = await sdk.searchFeedback({ agentId: testAgentId });
 
           console.log(`✅ Default chain: Found ${feedbacks.length} feedback entries`);
           console.log(`   Agent ID: ${testAgentId}`);
@@ -267,19 +251,12 @@ describe('Multi-Chain Agent Operations', () => {
             if (foundAgents.length > 0) {
               // Now try reputation search
               const result = await sdk.searchAgentsByReputation(
-                undefined,
-                undefined,
-                undefined,
-                undefined,
-                undefined,
-                undefined,
-                undefined,
-                undefined,
-                false,
-                10,
-                undefined,
-                undefined,
-                [chainId]
+                {},
+                {
+                  chains: [chainId],
+                  includeRevoked: false,
+                  pageSize: 10,
+                }
               );
 
               const agents = result.items || [];
@@ -310,19 +287,12 @@ describe('Multi-Chain Agent Operations', () => {
           } else {
             // For chains without reputation data, try general search
             const result = await sdk.searchAgentsByReputation(
-              undefined,
-              undefined,
-              undefined,
-              undefined,
-              undefined,
-              undefined,
-              undefined,
-              undefined,
-              false,
-              10,
-              undefined,
-              undefined,
-              [chainId]
+              {},
+              {
+                chains: [chainId],
+                includeRevoked: false,
+                pageSize: 10,
+              }
             );
             const agents = result.items || [];
             if (agents.length > 0) {
@@ -362,19 +332,12 @@ describe('Multi-Chain Agent Operations', () => {
 
           // Try reputation search
           const result = await sdk.searchAgentsByReputation(
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            false,
-            20,
-            undefined,
-            undefined,
-            chains
+            {},
+            {
+              chains,
+              includeRevoked: false,
+              pageSize: 20,
+            }
           );
 
           const agents = result.items || [];
@@ -434,37 +397,12 @@ describe('Multi-Chain Agent Operations', () => {
         if (allKnownAgents.length > 0) {
           // Query for specific agents we know have reputation
           result = await sdk.searchAgentsByReputation(
-            allKnownAgents,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            false,
-            20,
-            undefined,
-            undefined,
-            'all'
+            { agents: allKnownAgents },
+            { chains: 'all', includeRevoked: false, pageSize: 20 }
           );
         } else {
           // General search if no known agents
-          result = await sdk.searchAgentsByReputation(
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            false,
-            20,
-            undefined,
-            undefined,
-            'all'
-          );
+          result = await sdk.searchAgentsByReputation({}, { chains: 'all', includeRevoked: false, pageSize: 20 });
         }
 
         const agents = result.items || [];
@@ -534,19 +472,15 @@ describe('Multi-Chain Agent Operations', () => {
         // Use known tags that exist in feedback data
         // Test with chains that have reputation data (84532 has agents with averageScore)
         const result = await sdk.searchAgentsByReputation(
-          undefined,
-          TEST_TAGS.slice(0, 1), // Use "price" tag which exists in feedback
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          0, // No threshold to see any results
-          false,
-          20,
-          undefined,
-          undefined,
-          [84532] // Use chain with reputation data
+          {
+            tags: TEST_TAGS.slice(0, 1), // Use "price" tag which exists in feedback
+            minAverageScore: 0, // No threshold to see any results
+          },
+          {
+            chains: [84532], // Use chain with reputation data
+            includeRevoked: false,
+            pageSize: 20,
+          }
         );
 
         const agents = result.items || [];
@@ -582,11 +516,7 @@ describe('Multi-Chain Agent Operations', () => {
             testAgentId = TEST_AGENTS_WITH_FEEDBACK[chainId][0];
           } else {
             // Fallback: search for agents and try each one
-            const searchResult = await sdk.searchAgents(
-              { chains: [chainId] },
-              [],
-              10
-            );
+            const searchResult = await sdk.searchAgents({ chains: [chainId] }, { sort: [], pageSize: 10 });
 
             if (searchResult.items && searchResult.items.length > 0) {
               // Try to get reputation for each agent until we find one with feedback
@@ -648,11 +578,7 @@ describe('Multi-Chain Agent Operations', () => {
           testAgentId = fullId.includes(':') ? fullId.split(':').pop()! : fullId;
         } else {
           // Fallback: search for agents and try each one
-          const searchResult = await sdk.searchAgents(
-            { chains: [CHAIN_ID] },
-            [],
-            10
-          );
+          const searchResult = await sdk.searchAgents({ chains: [CHAIN_ID] }, { sort: [], pageSize: 10 });
 
           if (searchResult.items && searchResult.items.length > 0) {
             // Try to get reputation for each agent until we find one with feedback
@@ -717,36 +643,14 @@ describe('Multi-Chain Agent Operations', () => {
         if (allKnownAgents.length > 0) {
           // Query for specific agents we know have reputation
           result = await sdk.searchAgentsByReputation(
-            allKnownAgents,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            false,
-            20,
-            undefined,
-            undefined,
-            SUPPORTED_CHAINS
+            { agents: allKnownAgents },
+            { chains: SUPPORTED_CHAINS, includeRevoked: false, pageSize: 20 }
           );
         } else {
           // General search if no known agents
           result = await sdk.searchAgentsByReputation(
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            false,
-            20,
-            undefined,
-            undefined,
-            SUPPORTED_CHAINS
+            {},
+            { chains: SUPPORTED_CHAINS, includeRevoked: false, pageSize: 20 }
           );
         }
 

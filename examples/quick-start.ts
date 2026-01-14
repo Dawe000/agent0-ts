@@ -15,7 +15,7 @@ async function main() {
   const sdk = new SDK({
     chainId: 11155111, // Ethereum Sepolia
     rpcUrl: process.env.RPC_URL || 'https://sepolia.infura.io/v3/YOUR_PROJECT_ID',
-    signer: process.env.PRIVATE_KEY, // Optional: private key for signing transactions
+    signer: process.env.PRIVATE_KEY ?? process.env.AGENT_PRIVATE_KEY, // Optional: private key for signing transactions
     ipfs: 'pinata', // or 'filecoinPin' or 'node'
     pinataJwt: process.env.PINATA_JWT, // Required if ipfs='pinata'
   });
@@ -33,11 +33,13 @@ async function main() {
   // Configure A2A endpoint
   await agent.setA2A('https://api.example.com/a2a', '0.30');
 
-  // Set agent wallet
-  agent.setAgentWallet('0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb', 11155111);
-
   // Set trust models
   agent.setTrust(true, false);
+
+  // Add OASF skills and domains (standardized taxonomies used by the Python SDK tests)
+  // Set validateOASF=true to enforce the slug exists in the local taxonomy bundle.
+  agent.addSkill('advanced_reasoning_planning/strategic_planning', true);
+  agent.addDomain('finance_and_business/investment_services', true);
 
   // Set custom metadata
   agent.setMetadata({
@@ -54,6 +56,13 @@ async function main() {
   const registrationFile = await agent.registerIPFS();
   console.log(`Agent registered with ID: ${registrationFile.agentId}`);
   console.log(`Registration file URI: ${registrationFile.agentURI}`);
+
+  // Optionally set a dedicated agent wallet on-chain (requires new wallet signature).
+  // If you want agentWallet = owner wallet, you can skip this (contract sets initial value to owner).
+  //
+  // Example (two-wallet flow):
+  // const newWallet = '0x...';
+  // await agent.setAgentWallet(newWallet, { newWalletSigner: process.env.NEW_WALLET_PRIVATE_KEY });
 }
 
 main().catch(console.error);

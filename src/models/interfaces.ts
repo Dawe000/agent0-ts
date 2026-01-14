@@ -70,6 +70,11 @@ export interface Feedback {
   reviewer: Address;
   score?: number; // 0-100
   tags: string[];
+  /**
+   * Optional on-chain field in ERC-8004 Jan 2026.
+   * Prefer the on-chain value; only fall back to off-chain feedback file if missing.
+   */
+  endpoint?: string;
   text?: string;
   context?: Record<string, any>;
   proofOfPayment?: Record<string, any>;
@@ -83,6 +88,28 @@ export interface Feedback {
   name?: string; // MCP tool/resource name
   skill?: string; // A2A skill
   task?: string; // A2A task
+}
+
+/**
+ * Off-chain feedback file content.
+ *
+ * This is only uploaded (IPFS/Pinata/Filecoin/node) when you have rich fields that
+ * do not fit on-chain. It intentionally does NOT include on-chain fields like:
+ * score, tag1, tag2, endpoint.
+ */
+export interface FeedbackFileInput {
+  text?: string;
+  context?: Record<string, any>;
+  proofOfPayment?: Record<string, any>;
+
+  // Off-chain only fields
+  capability?: string; // MCP capability: "prompts", "resources", "tools", "completions"
+  name?: string; // MCP tool/resource name
+  skill?: string; // A2A skill
+  task?: string; // A2A task
+
+  // Allow callers to add extra keys if needed
+  [key: string]: any;
 }
 
 /**
@@ -102,6 +129,7 @@ export interface SearchParams {
   chains?: number[] | 'all'; // ChainId[] or 'all' to search all configured chains
   name?: string; // case-insensitive substring
   description?: string; // semantic; vector distance < threshold
+  query?: string; // Natural language query for semantic search (enables semantic search when provided)
   owners?: Address[];
   operators?: Address[];
   mcp?: boolean;
@@ -120,6 +148,35 @@ export interface SearchParams {
 }
 
 /**
+ * Paging/sort options for search calls.
+ */
+export interface SearchOptions {
+  sort?: string[];
+  pageSize?: number;
+  cursor?: string;
+}
+
+/**
+ * Filters for reputation-based agent search.
+ * (Matches the criteria portion of the Jan 2026 SDK search API; excludes paging/sort/chains.)
+ */
+export interface ReputationSearchFilters {
+  agents?: AgentId[];
+  tags?: string[];
+  reviewers?: Address[];
+  capabilities?: string[];
+  skills?: string[];
+  tasks?: string[];
+  names?: string[];
+  minAverageScore?: number;
+}
+
+export interface ReputationSearchOptions extends SearchOptions {
+  includeRevoked?: boolean;
+  chains?: number[] | 'all';
+}
+
+/**
  * Parameters for feedback search
  */
 export interface SearchFeedbackParams {
@@ -133,6 +190,25 @@ export interface SearchFeedbackParams {
   minScore?: number; // 0-100
   maxScore?: number; // 0-100
   includeRevoked?: boolean;
+}
+
+/**
+ * Filters for agent feedback search scoped to a single agentId.
+ */
+export interface FeedbackSearchFilters {
+  agentId: AgentId;
+  tags?: string[];
+  reviewers?: Address[];
+  capabilities?: string[];
+  skills?: string[];
+  tasks?: string[];
+  names?: string[];
+  includeRevoked?: boolean;
+}
+
+export interface FeedbackSearchOptions {
+  minScore?: number; // 0-100
+  maxScore?: number; // 0-100
 }
 
 /**

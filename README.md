@@ -4,7 +4,7 @@ Agent0 is the TypeScript SDK for agentic economies. It enables agents to registe
 
 ## What Does Agent0 SDK Do?
 
-Agent0 SDK v0.31 enables you to:
+Agent0 SDK v1.0.3 enables you to:
 
 - **Create and manage agent identities** - Register your AI agent on-chain with a unique identity, configure presentation fields (name, description, image), set wallet addresses, and manage trust models with x402 support
 - **Advertise agent capabilities** - Publish MCP and A2A endpoints, with automated extraction of MCP tools and A2A skills from endpoints
@@ -14,17 +14,19 @@ Agent0 SDK v0.31 enables you to:
 - **Cross-chain registration** - One-line registration with IPFS nodes, Pinata, Filecoin, or HTTP URIs
 - **Public indexing** - Subgraph indexing both on-chain and IPFS data for fast search and retrieval
 
-## ⚠️ Alpha Release
+## ⚠️ Beta Release
 
-Agent0 SDK v0.31 is in **alpha** with bugs and is not production ready. We're actively testing and improving it.
+Agent0 SDK v1.0.3 is beta. We're actively testing and improving it.
 
-**Bug reports & feedback:** GitHub: [Report issues](https://github.com/agent0lab/agent0-ts/issues) | Telegram: [@marcoderossi](https://t.me/marcoderossi) | Email: marco.derossi@consensys.net
+For breaking changes and migration notes, see `release_notes/RELEASE_NOTES_1.0.3.md`.
+
+**Bug reports & feedback:** GitHub: [Report issues](https://github.com/agent0lab/agent0-ts/issues) | Telegram: [Agent0 channel](https://t.me/agent0kitchen) | Email: team@ag0.xyz
 
 ## Installation
 
 ### Prerequisites
 
-- Node.js 18 or higher
+- Node.js 22 or higher
 - npm or yarn package manager
 - Private key for signing transactions (or run in read-only mode)
 - Access to an Ethereum RPC endpoint (e.g., Alchemy, Infura)
@@ -51,7 +53,7 @@ npm install
 npm run build
 ```
 
-**Note:** The generated TypeScript types are created automatically during `npm install` (via `postinstall` hook) or manually with `npm run codegen`. Always use `npm run build` instead of running `tsc` directly.
+**Note:** The generated TypeScript types are created as part of `npm run build` (or manually with `npm run codegen`). Always use `npm run build` instead of running `tsc` directly.
 
 ## Quick Start
 
@@ -64,7 +66,7 @@ import { SDK } from 'agent0-sdk';
 const sdk = new SDK({
   chainId: 11155111, // Ethereum Sepolia testnet
   rpcUrl: process.env.RPC_URL!,
-  signer: process.env.PRIVATE_KEY, // Optional: for write operations
+  signer: process.env.PRIVATE_KEY ?? process.env.AGENT_PRIVATE_KEY, // Optional: for write operations
   ipfs: 'pinata', // Options: 'pinata', 'filecoinPin', 'node'
   pinataJwt: process.env.PINATA_JWT // For Pinata
   // Subgraph URL auto-defaults from DEFAULT_SUBGRAPH_URLS
@@ -88,12 +90,13 @@ agent.setENS('myagent.eth');
 
 // Add OASF skills and domains (standardized taxonomies)
 agent.addSkill('data_engineering/data_transformation_pipeline', true);
-agent.addSkill('natural_language_processing/summarization', true);
+agent.addSkill('natural_language_processing/natural_language_generation/summarization', true);
 agent.addDomain('finance_and_business/investment_services', true);
-agent.addDomain('technology/data_science', true);
+agent.addDomain('technology/data_science/data_science', true);
 
-// Configure wallet and trust
-agent.setAgentWallet('0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb', 11155111);
+// Optionally set a dedicated agent wallet on-chain (requires new wallet signature).
+// If you want agentWallet = owner wallet, you can skip this (contract sets initial value to owner).
+// await agent.setAgentWallet('0x...', { newWalletSigner: process.env.NEW_WALLET_PRIVATE_KEY });
 agent.setTrust(true, true, false); // reputation, cryptoEconomic, teeAttestation
 
 // Add metadata and set status
@@ -174,26 +177,15 @@ const allResults = await sdk.searchAgents({
 
 // Search agents by reputation across chains
 const reputationResults = await sdk.searchAgentsByReputation(
-  undefined, // agents
-  undefined, // tags
-  undefined, // reviewers
-  undefined, // capabilities
-  undefined, // skills
-  undefined, // tasks
-  undefined, // names
-  80, // minAverageScore
-  false, // includeRevoked
-  20, // pageSize
-  undefined, // cursor
-  undefined, // sort
-  [11155111, 84532] // chains
+  { minAverageScore: 80 },
+  { includeRevoked: false, pageSize: 20, chains: [11155111, 84532] }
 );
 
 // Get agent from specific chain
 const agent = await sdk.getAgent('84532:123'); // Base Sepolia
 
 // Search feedback for agent on specific chain
-const feedbacks = await sdk.searchFeedback('84532:123'); // Base Sepolia
+const feedbacks = await sdk.searchFeedback({ agentId: '84532:123' }); // Base Sepolia
 
 // Get reputation summary for agent on specific chain
 const summary = await sdk.getReputationSummary('84532:123'); // Base Sepolia
@@ -243,28 +235,28 @@ const filteredResults = await sdk.searchAgents(
 ### 5. Give and Retrieve Feedback
 
 ```typescript
-// Prepare feedback (only score is mandatory)
-const feedbackFile = sdk.prepareFeedback(
-  '11155111:123',
-  85, // 0-100 (mandatory)
-  ['data_analyst', 'finance'], // Optional: tags
-  undefined, // Optional: text
-  'tools', // Optional: capability (MCP capability)
-  'code_generation', // Optional: name (MCP tool name)
-  'python' // Optional: skill (A2A skill)
-);
+// Optional: prepare an OFF-CHAIN feedback file (only needed for rich fields)
+const feedbackFile = sdk.prepareFeedbackFile({
+  capability: 'tools',
+  name: 'code_generation',
+  skill: 'python',
+  context: { sessionId: 'abc' },
+});
 
-// Give feedback
-const feedback = await sdk.giveFeedback('11155111:123', feedbackFile);
+// Give feedback (on-chain fields are passed directly)
+const feedback = await sdk.giveFeedback(
+  '11155111:123',
+  85, // score (0-100)
+  'data_analyst', // tag1 (optional)
+  'finance', // tag2 (optional)
+  'https://api.example.com/feedback', // endpoint (optional on-chain)
+  feedbackFile // optional off-chain file
+);
 
 // Search feedback
 const feedbackResults = await sdk.searchFeedback(
-  '11155111:123',
-  undefined, // tags
-  ['tools'], // capabilities
-  undefined, // skills
-  80, // minScore
-  100 // maxScore
+  { agentId: '11155111:123', capabilities: ['tools'] },
+  { minScore: 80, maxScore: 100 }
 );
 
 // Get reputation summary
@@ -324,8 +316,8 @@ Use `chainId:agentId` format to specify which chain an agent is on:
 const agent = await sdk.getAgent('84532:1234');  // Base Sepolia
 
 // Search feedback for agent on specific chain
-const feedbacks = await sdk.searchFeedback('84532:1234');  // Base Sepolia
-const feedbacksDefault = await sdk.searchFeedback('1234');  // Uses default chain
+const feedbacks = await sdk.searchFeedback({ agentId: '84532:1234' });  // Base Sepolia
+const feedbacksDefault = await sdk.searchFeedback({ agentId: '11155111:1234' });  // Default chain
 
 // Get reputation summary for agent on specific chain
 const summary = await sdk.getReputationSummary('84532:1234');  // Base Sepolia
@@ -351,26 +343,14 @@ const allChainsResult = await sdk.searchAgents({
 
 // Multi-chain reputation search
 const reputationResult = await sdk.searchAgentsByReputation(
-  undefined, // agents
-  undefined, // tags
-  undefined, // reviewers
-  undefined, // capabilities
-  undefined, // skills
-  undefined, // tasks
-  undefined, // names
-  80, // minAverageScore
-  false, // includeRevoked
-  20, // pageSize
-  undefined, // cursor
-  undefined, // sort
-  [11155111, 84532]  // Multiple chains
+  { minAverageScore: 80 },
+  { includeRevoked: false, pageSize: 20, chains: [11155111, 84532] }
 );
 
 // Search all chains for agents with reputation
 const allChainsReputation = await sdk.searchAgentsByReputation(
-  undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-  80, false, 20, undefined, undefined,
-  'all'  // All configured chains
+  { minAverageScore: 80 },
+  { includeRevoked: false, pageSize: 20, chains: 'all' }
 );
 
 // Access metadata about queried chains
@@ -437,7 +417,7 @@ OASF skills and domains appear in your agent's registration file:
       ],
       "domains": [
         "finance_and_business/investment_services",
-        "technology/data_science"
+        "technology/data_science/data_science"
       ]
     }
   ]
@@ -450,7 +430,7 @@ The SDK includes complete OASF v0.8.0 taxonomy files:
 - **Skills**: `src/taxonomies/all_skills.json` (136 skills)
 - **Domains**: `src/taxonomies/all_domains.json` (204 domains)
 
-Browse these files to find appropriate skill and domain slugs. For more information, see the [OASF specification](https://github.com/agntcy/oasf) and [Release Notes v0.31](RELEASE_NOTES_0.31.md).
+Browse these files to find appropriate skill and domain slugs. For more information, see the [OASF specification](https://github.com/agntcy/oasf) and `release_notes/RELEASE_NOTES_0.31.md`.
 
 ## 🚀 Coming Soon
 

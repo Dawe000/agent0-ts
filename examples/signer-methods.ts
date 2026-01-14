@@ -21,7 +21,7 @@ async function main() {
   const sdkWithPrivateKey = new SDK({
     chainId: 11155111, // Ethereum Sepolia
     rpcUrl: process.env.RPC_URL || 'https://sepolia.infura.io/v3/YOUR_PROJECT_ID',
-    signer: process.env.PRIVATE_KEY, // String: private key
+    signer: process.env.PRIVATE_KEY ?? process.env.AGENT_PRIVATE_KEY, // String: private key
     ipfs: 'pinata',
     pinataJwt: process.env.PINATA_JWT,
   });
@@ -41,7 +41,7 @@ async function main() {
   
   // Create a wallet instance
   const wallet = new ethers.Wallet(
-    process.env.PRIVATE_KEY || ethers.Wallet.createRandom().privateKey
+    process.env.PRIVATE_KEY || process.env.AGENT_PRIVATE_KEY || ethers.Wallet.createRandom().privateKey
   );
   
   const sdkWithWallet = new SDK({
@@ -74,7 +74,7 @@ async function main() {
     process.env.RPC_URL || 'https://sepolia.infura.io/v3/YOUR_PROJECT_ID'
   );
   const connectedWallet = new ethers.Wallet(
-    process.env.PRIVATE_KEY || ethers.Wallet.createRandom().privateKey,
+    process.env.PRIVATE_KEY || process.env.AGENT_PRIVATE_KEY || ethers.Wallet.createRandom().privateKey,
     provider
   );
   
