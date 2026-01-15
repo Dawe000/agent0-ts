@@ -1,6 +1,6 @@
 {
   "name": "agent0-sdk",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "TypeScript SDK for agent portability, discovery and trust based on ERC-8004",
   "type": "module",
   "main": "dist/index.js",

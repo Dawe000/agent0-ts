@@ -2,6 +2,7 @@ import {
   createPublicClient,
   createWalletClient,
   custom,
+  defineChain,
   http,
   type Hex,
   type Address as ViemAddress,
@@ -66,18 +67,31 @@ export class ViemChainClient implements ChainClient {
     this.chainId = config.chainId;
     this.rpcUrl = config.rpcUrl;
 
+    // viem requires a `chain` to be set for some wallet-client actions (e.g. writeContract)
+    // when using an EIP-1193 wallet provider transport. We construct a minimal chain object
+    // from chainId + rpcUrl so consumers don't need to provide viem chain definitions.
+    const viemChain = defineChain({
+      id: this.chainId,
+      name: `chain-${this.chainId}`,
+      nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+      rpcUrls: { default: { http: [this.rpcUrl] } },
+    });
+
     this.publicClient = createPublicClient({
+      chain: viemChain,
       transport: http(this.rpcUrl),
     });
 
     if (config.privateKey) {
       this.account = privateKeyToAccount(normalizeHexKey(config.privateKey));
       this.walletClient = createWalletClient({
+        chain: viemChain,
         account: this.account,
         transport: http(this.rpcUrl),
       });
     } else if (config.walletProvider) {
       this.walletClient = createWalletClient({
+        chain: viemChain,
         transport: custom(config.walletProvider),
       });
     }
