@@ -11,8 +11,21 @@
 
 import { SDK } from '../src/index';
 import { CHAIN_ID, RPC_URL, AGENT_PRIVATE_KEY, PINATA_JWT, printConfig } from './config';
+import { IDENTITY_REGISTRY_ABI } from '../src/core/contracts.js';
+import { parseAgentId } from '../src/utils/id-format.js';
 
-describe('Agent Transfer', () => {
+const HAS_REQUIRED_ENV = Boolean(
+  RPC_URL &&
+    RPC_URL.trim() !== '' &&
+    AGENT_PRIVATE_KEY &&
+    AGENT_PRIVATE_KEY.trim() !== '' &&
+    PINATA_JWT &&
+    PINATA_JWT.trim() !== ''
+);
+const describeMaybe = HAS_REQUIRED_ENV ? describe : describe.skip;
+const itMaybe = HAS_REQUIRED_ENV ? it : it.skip;
+
+describeMaybe('Agent Transfer', () => {
   let agentSdk: SDK;
   let ownerAAddress: string;
   const ownerBAddress = '0x742d35cc6634c0532925a3b8d4c9db96c4b4d8b6'; // Example address (lowercase for proper checksum)
@@ -22,20 +35,17 @@ describe('Agent Transfer', () => {
     printConfig();
   });
 
-  it('should create and register agent with owner A', async () => {
+  itMaybe('should create and register agent with owner A', async () => {
     const sdkConfig = {
       chainId: CHAIN_ID,
       rpcUrl: RPC_URL,
-      signer: AGENT_PRIVATE_KEY,
+      privateKey: AGENT_PRIVATE_KEY,
       ipfs: 'pinata' as const,
       pinataJwt: PINATA_JWT,
     };
 
     agentSdk = new SDK(sdkConfig);
-    if (!agentSdk.web3Client.signer) {
-      throw new Error('Signer required for transfer test');
-    }
-    ownerAAddress = agentSdk.web3Client.address!;
+    ownerAAddress = (await agentSdk.chainClient.getAddress()) || (await agentSdk.chainClient.ensureAddress());
 
     // Create agent
     const agent = agentSdk.createAgent(
@@ -71,7 +81,7 @@ describe('Agent Transfer', () => {
     expect(currentOwner.toLowerCase()).toBe(ownerAAddress.toLowerCase());
   });
 
-  it('should transfer agent to owner B', async () => {
+  itMaybe('should transfer agent to owner B', async () => {
     const agent = await agentSdk.loadAgent(agentId);
 
     // Transfer agent using Agent.transfer() method
@@ -83,7 +93,7 @@ describe('Agent Transfer', () => {
     expect(transferResult.agentId).toBe(agentId);
   });
 
-  it('should verify ownership change', async () => {
+  itMaybe('should verify ownership change', async () => {
     // Verify ownership changed (or is the expected current owner)
     const newOwner = await agentSdk.getAgentOwner(agentId);
     // The agent may have been transferred in a previous test run
@@ -91,18 +101,22 @@ describe('Agent Transfer', () => {
     expect(newOwner).toMatch(/^0x[a-fA-F0-9]{40}$/); // Valid address format
 
     // Verify agent URI unchanged
-    const identityRegistry = agentSdk.getIdentityRegistry();
-    const { tokenId } = await import('../src/utils/id-format').then((m) => m.parseAgentId(agentId));
-    const agentURI = await agentSdk.web3Client.callContract(identityRegistry, 'tokenURI', BigInt(tokenId));
+    const { tokenId } = parseAgentId(agentId);
+    const agentURI = await agentSdk.chainClient.readContract<string>({
+      address: agentSdk.identityRegistryAddress(),
+      abi: IDENTITY_REGISTRY_ABI,
+      functionName: 'tokenURI',
+      args: [BigInt(tokenId)],
+    });
     expect(agentURI).toBeTruthy();
   });
 
-  it('should fail to transfer from non-owner', async () => {
+  itMaybe('should fail to transfer from non-owner', async () => {
     // Try to transfer back to Owner A (should fail since we're not the current owner)
     await expect(agentSdk.transferAgent(agentId, ownerAAddress)).rejects.toThrow();
   });
 
-  it('should reject invalid transfer attempts', async () => {
+  itMaybe('should reject invalid transfer attempts', async () => {
     // Note: These tests need an agent instance, but owner changed
     // For testing invalid transfers, we'd need to create a new agent or use SDK.transferAgent
     // For now, we'll test with SDK.transferAgent which will validate
@@ -116,7 +130,7 @@ describe('Agent Transfer', () => {
     await expect(agentSdk.transferAgent(agentId, 'invalid_address')).rejects.toThrow();
   });
 
-  it('should verify agent data integrity after transfer', async () => {
+  itMaybe('should verify agent data integrity after transfer', async () => {
     // Load agent and verify all data is intact
     const loadedAgent = await agentSdk.loadAgent(agentId);
 

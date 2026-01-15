@@ -3,11 +3,11 @@
  * 
  * This example demonstrates the two ways to configure a signer in the SDK:
  * 1. Using a private key string
- * 2. Using an ethers Wallet or Signer object
+ * 2. Browser: using an EIP-1193 wallet provider (ERC-6963)
  */
 
 import { SDK } from '../src/index';
-import { ethers } from 'ethers';
+import { discoverEip6963Providers, connectEip1193 } from '../src/browser/eip6963.js';
 
 async function main() {
   console.log('=== Agent0 SDK - Signer Configuration Methods ===\n');
@@ -18,80 +18,50 @@ async function main() {
   console.log('Method 1: Private Key String');
   console.log('-------------------------------');
   
+  const rpcUrl = process.env.RPC_URL;
+  const privateKey = process.env.PRIVATE_KEY ?? process.env.AGENT_PRIVATE_KEY;
+  if (!rpcUrl || rpcUrl.trim() === '') {
+    throw new Error('RPC_URL is required for this example');
+  }
+  if (!privateKey || privateKey.trim() === '') {
+    throw new Error('PRIVATE_KEY (or AGENT_PRIVATE_KEY) is required for this example');
+  }
+
   const sdkWithPrivateKey = new SDK({
     chainId: 11155111, // Ethereum Sepolia
-    rpcUrl: process.env.RPC_URL || 'https://sepolia.infura.io/v3/YOUR_PROJECT_ID',
-    signer: process.env.PRIVATE_KEY ?? process.env.AGENT_PRIVATE_KEY, // String: private key
-    ipfs: 'pinata',
-    pinataJwt: process.env.PINATA_JWT,
+    rpcUrl,
+    privateKey, // String: private key
   });
 
   console.log('✓ SDK initialized with private key string');
   console.log(`  Read-only mode: ${sdkWithPrivateKey.isReadOnly}`);
   if (!sdkWithPrivateKey.isReadOnly) {
-    console.log(`  Signer address: ${sdkWithPrivateKey.web3Client.address}`);
+    console.log(`  Signer address: ${await sdkWithPrivateKey.chainClient.getAddress()}`);
   }
   console.log();
 
   // ========================================
-  // Method 2: Using an ethers Wallet object
+  // Method 2: Browser wallet (ERC-6963 / EIP-1193)
   // ========================================
-  console.log('Method 2: Ethers Wallet Object');
+  console.log('Method 2: Browser Wallet (ERC-6963 / EIP-1193)');
   console.log('-------------------------------');
-  
-  // Create a wallet instance
-  const wallet = new ethers.Wallet(
-    process.env.PRIVATE_KEY || process.env.AGENT_PRIVATE_KEY || ethers.Wallet.createRandom().privateKey
-  );
-  
-  const sdkWithWallet = new SDK({
-    chainId: 11155111,
-    rpcUrl: process.env.RPC_URL || 'https://sepolia.infura.io/v3/YOUR_PROJECT_ID',
-    signer: wallet, // ethers.Wallet object
-    ipfs: 'pinata',
-    pinataJwt: process.env.PINATA_JWT,
-  });
 
-  console.log('✓ SDK initialized with ethers Wallet object');
-  console.log(`  Read-only mode: ${sdkWithWallet.isReadOnly}`);
-  if (!sdkWithWallet.isReadOnly) {
-    console.log(`  Signer address: ${sdkWithWallet.web3Client.address}`);
-  }
-  console.log();
+  console.log('Note: This requires running in a browser (or a test environment with injected wallets).');
+  const providers = await discoverEip6963Providers({ timeoutMs: 250 });
+  if (providers.length === 0) {
+    console.log('  No ERC-6963 providers found.\n');
+  } else {
+    const selected = providers[0];
+    const { account } = await connectEip1193(selected.provider, { requestAccounts: false });
+    const sdkWithWalletProvider = new SDK({
+      chainId: 11155111,
+      rpcUrl: process.env.RPC_URL || 'https://sepolia.infura.io/v3/YOUR_PROJECT_ID',
+      walletProvider: selected.provider,
+    });
 
-  // ========================================
-  // Method 3: Using a connected Signer
-  // ========================================
-  console.log('Method 3: Connected Signer (e.g., from Web3 Provider)');
-  console.log('-------------------------------------------------------');
-  
-  // This simulates getting a signer from a web3 provider (e.g., MetaMask)
-  // In a browser environment, you might get this from:
-  // const provider = new ethers.BrowserProvider(window.ethereum);
-  // const signer = await provider.getSigner();
-  
-  const provider = new ethers.JsonRpcProvider(
-    process.env.RPC_URL || 'https://sepolia.infura.io/v3/YOUR_PROJECT_ID'
-  );
-  const connectedWallet = new ethers.Wallet(
-    process.env.PRIVATE_KEY || process.env.AGENT_PRIVATE_KEY || ethers.Wallet.createRandom().privateKey,
-    provider
-  );
-  
-  const sdkWithSigner = new SDK({
-    chainId: 11155111,
-    rpcUrl: process.env.RPC_URL || 'https://sepolia.infura.io/v3/YOUR_PROJECT_ID',
-    signer: connectedWallet, // Already connected Signer
-    ipfs: 'pinata',
-    pinataJwt: process.env.PINATA_JWT,
-  });
-
-  console.log('✓ SDK initialized with connected Signer');
-  console.log(`  Read-only mode: ${sdkWithSigner.isReadOnly}`);
-  if (!sdkWithSigner.isReadOnly) {
-    // For generic Signers, use async getAddress()
-    const signerAddress = await sdkWithSigner.web3Client.getAddress();
-    console.log(`  Signer address: ${signerAddress}`);
+    console.log(`✓ Found provider: ${selected.info.name} (${selected.info.rdns})`);
+    console.log(`  Connected account (if already authorized): ${account || 'none'}`);
+    console.log(`  Read-only mode: ${sdkWithWalletProvider.isReadOnly}`);
   }
   console.log();
 

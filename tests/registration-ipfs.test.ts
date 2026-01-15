@@ -5,9 +5,21 @@
  * reloads it, and verifies data integrity.
  */
 
-import { ethers } from 'ethers';
 import { SDK } from '../src/index';
 import { CHAIN_ID, RPC_URL, AGENT_PRIVATE_KEY, PINATA_JWT, CLIENT_PRIVATE_KEY, printConfig } from './config';
+import { privateKeyToAccount } from 'viem/accounts';
+
+const HAS_REQUIRED_ENV = Boolean(
+  RPC_URL &&
+    RPC_URL.trim() !== '' &&
+    AGENT_PRIVATE_KEY &&
+    AGENT_PRIVATE_KEY.trim() !== '' &&
+    PINATA_JWT &&
+    PINATA_JWT.trim() !== ''
+);
+const HAS_CLIENT_KEY = Boolean(CLIENT_PRIVATE_KEY && CLIENT_PRIVATE_KEY.trim() !== '');
+const describeMaybe = HAS_REQUIRED_ENV ? describe : describe.skip;
+const itWalletMaybe = HAS_CLIENT_KEY ? it : it.skip;
 
 function generateRandomData() {
   const randomSuffix = Math.floor(Math.random() * 9000) + 1000;
@@ -33,7 +45,7 @@ function generateRandomData() {
   };
 }
 
-describe('Agent Registration with IPFS Pin', () => {
+describeMaybe('Agent Registration with IPFS Pin', () => {
   let sdk: SDK;
   let testData: ReturnType<typeof generateRandomData>;
   let agentId: string;
@@ -48,7 +60,7 @@ describe('Agent Registration with IPFS Pin', () => {
     const sdkConfig = {
       chainId: CHAIN_ID,
       rpcUrl: RPC_URL,
-      signer: AGENT_PRIVATE_KEY,
+      privateKey: AGENT_PRIVATE_KEY,
       ipfs: 'pinata' as const,
       pinataJwt: PINATA_JWT,
     };
@@ -68,18 +80,19 @@ describe('Agent Registration with IPFS Pin', () => {
     const registrationFile = await agent.registerIPFS();
     agentId = registrationFile.agentId!;
 
-    // Set agent wallet on-chain (two-wallet flow): new wallet must sign
-    if (!CLIENT_PRIVATE_KEY || CLIENT_PRIVATE_KEY.trim() === '') {
-      throw new Error('CLIENT_PRIVATE_KEY is required for agentWallet tests. Set it in .env.');
-    }
-    const secondWalletAddress = new ethers.Wallet(
-      CLIENT_PRIVATE_KEY.startsWith('0x') ? CLIENT_PRIVATE_KEY : `0x${CLIENT_PRIVATE_KEY}`
-    ).address;
-    await agent.setAgentWallet(secondWalletAddress, { newWalletSigner: CLIENT_PRIVATE_KEY });
-
     expect(agentId).toBeTruthy();
     expect(registrationFile.agentURI).toBeTruthy();
     expect(registrationFile.agentURI!.startsWith('ipfs://')).toBe(true);
+  });
+
+  itWalletMaybe('should set agent wallet on-chain (requires CLIENT_PRIVATE_KEY)', async () => {
+    if (!agent) {
+      throw new Error('Agent not initialized from previous test');
+    }
+    const secondWalletAddress = privateKeyToAccount(
+      (CLIENT_PRIVATE_KEY.startsWith('0x') ? CLIENT_PRIVATE_KEY : `0x${CLIENT_PRIVATE_KEY}`) as any
+    ).address;
+    await agent.setAgentWallet(secondWalletAddress, { newWalletPrivateKey: CLIENT_PRIVATE_KEY });
   });
 
   it(
@@ -109,14 +122,7 @@ describe('Agent Registration with IPFS Pin', () => {
       false // Disable endpoint crawling (2B)
     );
 
-      // Update agent wallet on-chain again using the same second wallet signer (for simplicity)
-      if (!CLIENT_PRIVATE_KEY || CLIENT_PRIVATE_KEY.trim() === '') {
-        throw new Error('CLIENT_PRIVATE_KEY is required for agentWallet tests. Set it in .env.');
-      }
-      const secondWalletAddress = new ethers.Wallet(
-        CLIENT_PRIVATE_KEY.startsWith('0x') ? CLIENT_PRIVATE_KEY : `0x${CLIENT_PRIVATE_KEY}`
-      ).address;
-      await agent.setAgentWallet(secondWalletAddress, { newWalletSigner: CLIENT_PRIVATE_KEY });
+      // agentWallet flow is tested separately (skipped if CLIENT_PRIVATE_KEY is not set)
     agent.setENS(`${testData.ensName}.updated`, `1.${Math.floor(Math.random() * 10)}`);
     agent.setActive(false);
     agent.setX402Support(true);

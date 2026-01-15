@@ -5,7 +5,6 @@
 
 import type { AgentSummary, SearchParams, SearchResultMeta } from '../models/interfaces.js';
 import type { AgentId, ChainId } from '../models/types.js';
-import type { Web3Client } from './web3-client.js';
 import { SubgraphClient } from './subgraph-client.js';
 import { normalizeAddress } from '../utils/validation.js';
 import { DEFAULT_SUBGRAPH_URLS } from './contracts.js';
@@ -16,7 +15,6 @@ import { DEFAULT_SUBGRAPH_URLS } from './contracts.js';
  */
 export class AgentIndexer {
   constructor(
-    private web3Client: Web3Client,
     private subgraphClient?: SubgraphClient,
     private subgraphUrlOverrides?: Record<ChainId, string>
   ) {}

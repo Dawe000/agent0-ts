@@ -11,13 +11,27 @@
 import { SDK } from '../src/index';
 
 async function main() {
+  const rpcUrl = process.env.RPC_URL;
+  const privateKey = process.env.PRIVATE_KEY ?? process.env.AGENT_PRIVATE_KEY;
+  const pinataJwt = process.env.PINATA_JWT;
+
+  if (!rpcUrl || rpcUrl.trim() === '') {
+    throw new Error('RPC_URL is required for this example');
+  }
+  if (!privateKey || privateKey.trim() === '') {
+    throw new Error('PRIVATE_KEY (or AGENT_PRIVATE_KEY) is required for this example');
+  }
+  if (!pinataJwt || pinataJwt.trim() === '') {
+    throw new Error('PINATA_JWT is required for this example (registerIPFS uses pinata)');
+  }
+
   // Initialize SDK
   const sdk = new SDK({
     chainId: 11155111, // Ethereum Sepolia
-    rpcUrl: process.env.RPC_URL || 'https://sepolia.infura.io/v3/YOUR_PROJECT_ID',
-    signer: process.env.PRIVATE_KEY ?? process.env.AGENT_PRIVATE_KEY, // Required for updates
+    rpcUrl,
+    privateKey, // Required for updates
     ipfs: 'pinata',
-    pinataJwt: process.env.PINATA_JWT,
+    pinataJwt,
   });
 
   // 1) Create + register a fresh agent (self-contained)
@@ -64,7 +78,7 @@ async function main() {
   // Leaving it out here keeps the example focused on "update + re-register".
   // If you want to try it (one-wallet flow), uncomment:
   //
-  // const newWalletAddress = (await sdk.web3Client.getAddress())!;
+  // const newWalletAddress = (await sdk.chainClient.getAddress())!;
   // console.log('Setting agent wallet on-chain...');
   // const walletTxHash = await loaded.setAgentWallet(newWalletAddress);
   // console.log(`Agent wallet updated. Transaction: ${walletTxHash || '(skipped - already set)'}`);

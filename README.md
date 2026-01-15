@@ -4,7 +4,7 @@ Agent0 is the TypeScript SDK for agentic economies. It enables agents to registe
 
 ## What Does Agent0 SDK Do?
 
-Agent0 SDK v1.0.3 enables you to:
+Agent0 SDK v1.1.0 enables you to:
 
 - **Create and manage agent identities** - Register your AI agent on-chain with a unique identity, configure presentation fields (name, description, image), set wallet addresses, and manage trust models with x402 support
 - **Advertise agent capabilities** - Publish MCP and A2A endpoints, with automated extraction of MCP tools and A2A skills from endpoints
@@ -16,9 +16,9 @@ Agent0 SDK v1.0.3 enables you to:
 
 ## ⚠️ Beta Release
 
-Agent0 SDK v1.0.3 is beta. We're actively testing and improving it.
+Agent0 SDK v1.1.0 is beta. We're actively testing and improving it.
 
-For breaking changes and migration notes, see `release_notes/RELEASE_NOTES_1.0.3.md`.
+For breaking changes and migration notes, see `release_notes/RELEASE_NOTES_1.0.3.md` and `release_notes/RELEASE_NOTES_1.1.0.md`.
 
 **Bug reports & feedback:** GitHub: [Report issues](https://github.com/agent0lab/agent0-ts/issues) | Telegram: [Agent0 channel](https://t.me/agent0kitchen) | Email: team@ag0.xyz
 
@@ -57,7 +57,7 @@ npm run build
 
 ## Quick Start
 
-### 1. Initialize SDK
+### 1. Initialize SDK (server-side)
 
 ```typescript
 import { SDK } from 'agent0-sdk';
@@ -66,10 +66,32 @@ import { SDK } from 'agent0-sdk';
 const sdk = new SDK({
   chainId: 11155111, // Ethereum Sepolia testnet
   rpcUrl: process.env.RPC_URL!,
-  signer: process.env.PRIVATE_KEY ?? process.env.AGENT_PRIVATE_KEY, // Optional: for write operations
+  privateKey: process.env.PRIVATE_KEY ?? process.env.AGENT_PRIVATE_KEY, // Optional: for write operations
   ipfs: 'pinata', // Options: 'pinata', 'filecoinPin', 'node'
   pinataJwt: process.env.PINATA_JWT // For Pinata
   // Subgraph URL auto-defaults from DEFAULT_SUBGRAPH_URLS
+});
+```
+
+### 1b. Initialize SDK (browser-side with ERC-6963 wallets)
+
+In the browser you typically keep **reads on your `rpcUrl`** and use a wallet (EIP-1193) for **writes**.
+
+```typescript
+import { SDK } from 'agent0-sdk';
+import { discoverEip6963Providers, connectEip1193 } from 'agent0-sdk/eip6963';
+
+const providers = await discoverEip6963Providers();
+if (providers.length === 0) throw new Error('No injected wallets found');
+
+// Pick a wallet (UI selection recommended)
+const { provider } = providers[0];
+await connectEip1193(provider); // prompts user
+
+const sdk = new SDK({
+  chainId: 11155111,
+  rpcUrl: 'https://sepolia.infura.io/v3/YOUR_PROJECT_ID',
+  walletProvider: provider,
 });
 ```
 
@@ -96,7 +118,7 @@ agent.addDomain('technology/data_science/data_science', true);
 
 // Optionally set a dedicated agent wallet on-chain (requires new wallet signature).
 // If you want agentWallet = owner wallet, you can skip this (contract sets initial value to owner).
-// await agent.setAgentWallet('0x...', { newWalletSigner: process.env.NEW_WALLET_PRIVATE_KEY });
+// await agent.setAgentWallet('0x...', { newWalletPrivateKey: process.env.NEW_WALLET_PRIVATE_KEY });
 agent.setTrust(true, true, false); // reputation, cryptoEconomic, teeAttestation
 
 // Add metadata and set status

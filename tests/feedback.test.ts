@@ -13,11 +13,16 @@
 import { SDK } from '../src/index';
 import { CHAIN_ID, RPC_URL, AGENT_PRIVATE_KEY, PINATA_JWT, CLIENT_PRIVATE_KEY, printConfig } from './config';
 
+const HAS_REQUIRED_ENV =
+  Boolean(RPC_URL && RPC_URL.trim() !== '') &&
+  Boolean(AGENT_PRIVATE_KEY && AGENT_PRIVATE_KEY.trim() !== '') &&
+  Boolean(CLIENT_PRIVATE_KEY && CLIENT_PRIVATE_KEY.trim() !== '') &&
+  Boolean(PINATA_JWT && PINATA_JWT.trim() !== '');
+
+const describeMaybe = HAS_REQUIRED_ENV ? describe : describe.skip;
+const itMaybe = HAS_REQUIRED_ENV ? it : it.skip;
+
 // Client configuration (different wallet)
-// Must be set in .env file
-if (!CLIENT_PRIVATE_KEY || CLIENT_PRIVATE_KEY.trim() === '') {
-  throw new Error('CLIENT_PRIVATE_KEY is required for feedback tests. Set it in .env file.');
-}
 const clientPrivateKey = CLIENT_PRIVATE_KEY;
 
 function generateFeedbackData(index: number) {
@@ -49,7 +54,7 @@ function generateFeedbackData(index: number) {
   };
 }
 
-describe('Agent Feedback Flow with IPFS Pin', () => {
+describeMaybe('Agent Feedback Flow with IPFS Pin', () => {
   let agentSdk: SDK;
   let clientSdk: SDK;
   let agentSdkWithSigner: SDK | undefined;
@@ -62,18 +67,18 @@ describe('Agent Feedback Flow with IPFS Pin', () => {
     printConfig();
   });
 
-  it('should create and register an agent for feedback tests', async () => {
+  itMaybe('should create and register an agent for feedback tests', async () => {
     // Use a signer so we can mint; keep IPFS configured since feedback files are stored on IPFS.
     const sdkConfig = {
       chainId: CHAIN_ID,
       rpcUrl: RPC_URL,
       ipfs: 'pinata' as const,
       pinataJwt: PINATA_JWT,
-      signer: AGENT_PRIVATE_KEY,
+      privateKey: AGENT_PRIVATE_KEY,
     };
 
     agentSdkWithSigner = new SDK(sdkConfig);
-    if (!agentSdkWithSigner.web3Client.signer) {
+    if (agentSdkWithSigner.isReadOnly) {
       throw new Error('Failed to initialize agent signer. Check AGENT_PRIVATE_KEY in .env file.');
     }
 
@@ -101,7 +106,7 @@ describe('Agent Feedback Flow with IPFS Pin', () => {
     expect(agent.agentId).toBe(agentId);
   });
 
-  it('should initialize client SDK', async () => {
+  itMaybe('should initialize client SDK', async () => {
     const sdkConfig = {
       chainId: CHAIN_ID,
       rpcUrl: RPC_URL,
@@ -109,14 +114,11 @@ describe('Agent Feedback Flow with IPFS Pin', () => {
       pinataJwt: PINATA_JWT,
     };
 
-    clientSdk = new SDK({ ...sdkConfig, signer: clientPrivateKey });
-    if (!clientSdk.web3Client.signer) {
+    clientSdk = new SDK({ ...sdkConfig, privateKey: clientPrivateKey });
+    if (clientSdk.isReadOnly) {
       throw new Error('Failed to initialize client signer. Check CLIENT_PRIVATE_KEY in .env file.');
     }
-    clientAddress = clientSdk.web3Client.address!;
-    if (!clientAddress) {
-      throw new Error('Failed to get client address from signer.');
-    }
+    clientAddress = (await clientSdk.chainClient.getAddress()) || (await clientSdk.chainClient.ensureAddress());
 
     // Note: feedbackAuth is no longer required in ERC-8004 Jan 2026 spec
     // Clients can now submit feedback directly without pre-authorization
@@ -124,7 +126,7 @@ describe('Agent Feedback Flow with IPFS Pin', () => {
 
   // agentSdkWithSigner is initialized as part of agent registration above
 
-  it('should submit feedback with IPFS storage', async () => {
+  itMaybe('should submit feedback with IPFS storage', async () => {
     if (!clientSdk || !clientAddress) {
       throw new Error('Required SDKs not initialized. Previous tests must pass first.');
     }
@@ -183,7 +185,7 @@ describe('Agent Feedback Flow with IPFS Pin', () => {
     }
   });
 
-  it('should append response to feedback', async () => {
+  itMaybe('should append response to feedback', async () => {
     if (!agentSdkWithSigner || !clientAddress) {
       throw new Error('Required SDKs not initialized. Previous tests must pass first.');
     }
@@ -207,7 +209,7 @@ describe('Agent Feedback Flow with IPFS Pin', () => {
     expect(txHash).toBeTruthy();
   });
 
-  it('should retrieve feedback using getFeedback', async () => {
+  itMaybe('should retrieve feedback using getFeedback', async () => {
     if (!agentSdkWithSigner || !clientAddress) {
       throw new Error('Required SDKs not initialized. Previous tests must pass first.');
     }
@@ -228,7 +230,7 @@ describe('Agent Feedback Flow with IPFS Pin', () => {
     expect(retrievedFeedback.agentId).toBe(agentId);
   });
 
-  it('should search feedback with filters', async () => {
+  itMaybe('should search feedback with filters', async () => {
     if (!agentSdkWithSigner) {
       throw new Error('Required SDKs not initialized. Previous tests must pass first.');
     }

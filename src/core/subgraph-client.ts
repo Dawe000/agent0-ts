@@ -5,7 +5,6 @@
 import { GraphQLClient } from 'graphql-request';
 import type { AgentSummary, SearchParams } from '../models/interfaces.js';
 import { normalizeAddress } from '../utils/validation.js';
-import type { Agent, AgentRegistrationFile } from '../models/generated/subgraph-types.js';
 
 export interface SubgraphQueryOptions {
   where?: Record<string, unknown>;
@@ -16,13 +15,38 @@ export interface SubgraphQueryOptions {
   includeRegistrationFile?: boolean;
 }
 
-// Type representing the agent data returned from our queries
-// Note: Queries return partial Agent objects (not all fields are queried)
-export type QueryAgent = Pick<
-  Agent,
-  'id' | 'chainId' | 'agentId' | 'owner' | 'operators' | 'agentURI' | 'createdAt' | 'updatedAt' | 'agentWallet'
-> & {
+export type QueryAgent = {
+  id: string;
+  chainId: bigint;
+  agentId: bigint;
+  owner?: string | null;
+  operators?: string[] | null;
+  agentURI?: string | null;
+  createdAt?: bigint | null;
+  updatedAt?: bigint | null;
+  agentWallet?: string | null;
   registrationFile?: AgentRegistrationFile | null;
+};
+
+export type AgentRegistrationFile = {
+  id: string;
+  agentId?: string | null;
+  name?: string | null;
+  description?: string | null;
+  image?: string | null;
+  active?: boolean | null;
+  x402support?: boolean | null;
+  supportedTrusts?: string[] | null;
+  mcpEndpoint?: string | null;
+  mcpVersion?: string | null;
+  a2aEndpoint?: string | null;
+  a2aVersion?: string | null;
+  ens?: string | null;
+  did?: string | null;
+  mcpTools?: string[] | null;
+  mcpPrompts?: string[] | null;
+  mcpResources?: string[] | null;
+  a2aSkills?: string[] | null;
 };
 
 /**

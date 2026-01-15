@@ -1,8 +1,6 @@
 /**
  * Main SDK class for Agent0
  */
-
-import { ethers } from 'ethers';
 import type {
   AgentSummary,
   Feedback,
@@ -18,29 +16,39 @@ import type {
   FeedbackSearchFilters,
   FeedbackSearchOptions,
 } from '../models/interfaces.js';
-import type { AgentRegistrationFile as SubgraphRegistrationFile } from '../models/generated/subgraph-types.js';
 import type { AgentId, ChainId, Address, URI } from '../models/types.js';
 import { EndpointType, TrustModel } from '../models/enums.js';
 import { formatAgentId, parseAgentId } from '../utils/id-format.js';
 import { IPFS_GATEWAYS, TIMEOUTS } from '../utils/constants.js';
-import { Web3Client, type TransactionOptions } from './web3-client.js';
+import type { ChainClient, EIP1193Provider as Eip1193Provider } from './chain-client.js';
+import { ViemChainClient } from './viem-chain-client.js';
 import { IPFSClient, type IPFSClientConfig } from './ipfs-client.js';
 import { SubgraphClient } from './subgraph-client.js';
 import { FeedbackManager } from './feedback-manager.js';
 import { AgentIndexer } from './indexer.js';
 import { Agent } from './agent.js';
 import {
-  IDENTITY_REGISTRY_ABI,
-  REPUTATION_REGISTRY_ABI,
-  VALIDATION_REGISTRY_ABI,
   DEFAULT_REGISTRIES,
   DEFAULT_SUBGRAPH_URLS,
+  IDENTITY_REGISTRY_ABI,
+  REPUTATION_REGISTRY_ABI,
 } from './contracts.js';
 
 export interface SDKConfig {
   chainId: ChainId;
   rpcUrl: string;
-  signer?: string | ethers.Wallet | ethers.Signer; // Private key string OR ethers Wallet/Signer (optional for read-only operations)
+  /**
+   * Backwards-compatible alias for `privateKey` (accepts a hex private key string).
+   */
+  signer?: string;
+  /**
+   * Server-side signing (hex private key string).
+   */
+  privateKey?: string;
+  /**
+   * Browser-side signing (EIP-1193 provider, typically selected via ERC-6963).
+   */
+  walletProvider?: Eip1193Provider;
   registryOverrides?: Record<ChainId, Record<string, Address>>;
   // IPFS configuration
   ipfs?: 'node' | 'filecoinPin' | 'pinata';
@@ -56,24 +64,28 @@ export interface SDKConfig {
  * Main SDK class for Agent0
  */
 export class SDK {
-  private readonly _web3Client: Web3Client;
+  private readonly _chainClient: ChainClient;
   private _ipfsClient?: IPFSClient;
   private _subgraphClient?: SubgraphClient;
   private readonly _feedbackManager: FeedbackManager;
   private readonly _indexer: AgentIndexer;
-  private _identityRegistry?: ethers.Contract;
-  private _reputationRegistry?: ethers.Contract;
-  private _validationRegistry?: ethers.Contract;
   private readonly _registries: Record<string, Address>;
   private readonly _chainId: ChainId;
   private readonly _subgraphUrls: Record<ChainId, string> = {};
+  private readonly _hasSignerConfig: boolean;
 
   constructor(config: SDKConfig) {
     this._chainId = config.chainId;
 
-    // Initialize Web3 client
-    this._web3Client = new Web3Client(config.rpcUrl, config.signer);
-    // Note: chainId will be fetched asynchronously on first use
+    // Initialize Chain client (viem-only)
+    const privateKey = config.privateKey ?? config.signer;
+    this._hasSignerConfig = Boolean(privateKey || config.walletProvider);
+    this._chainClient = new ViemChainClient({
+      chainId: config.chainId,
+      rpcUrl: config.rpcUrl,
+      privateKey,
+      walletProvider: config.walletProvider,
+    });
 
     // Resolve registry addresses
     const registryOverrides = config.registryOverrides || {};
@@ -100,7 +112,7 @@ export class SDK {
     }
 
     // Initialize indexer
-    this._indexer = new AgentIndexer(this._web3Client, this._subgraphClient, this._subgraphUrls);
+    this._indexer = new AgentIndexer(this._subgraphClient, this._subgraphUrls);
 
     // Initialize IPFS client
     if (config.ipfs) {
@@ -109,10 +121,10 @@ export class SDK {
 
     // Initialize feedback manager (will set registries after they're created)
     this._feedbackManager = new FeedbackManager(
-      this._web3Client,
+      this._chainClient,
       this._ipfsClient,
-      undefined, // reputationRegistry - will be set lazily
-      undefined, // identityRegistry - will be set lazily
+      undefined, // reputationRegistryAddress - will be set lazily
+      undefined, // identityRegistryAddress - will be set lazily
       this._subgraphClient
     );
 
@@ -161,10 +173,7 @@ export class SDK {
    * Get current chain ID
    */
   async chainId(): Promise<ChainId> {
-    if (this._web3Client.chainId === 0n) {
-      await this._web3Client.initialize();
-    }
-    return Number(this._web3Client.chainId);
+    return this._chainId;
   }
 
   /**
@@ -199,56 +208,32 @@ export class SDK {
     return undefined;
   }
 
-  /**
-   * Get identity registry contract
-   */
-  getIdentityRegistry(): ethers.Contract {
-    if (!this._identityRegistry) {
+  identityRegistryAddress(): Address {
       const address = this._registries.IDENTITY;
-      if (!address) {
-        throw new Error(`No identity registry address for chain ${this._chainId}`);
-      }
-      this._identityRegistry = this._web3Client.getContract(address, IDENTITY_REGISTRY_ABI);
-    }
-    return this._identityRegistry;
+    if (!address) throw new Error(`No identity registry address for chain ${this._chainId}`);
+    // Ensure feedback manager has it for off-chain file composition.
+    this._feedbackManager.setIdentityRegistryAddress(address);
+    return address;
   }
 
-  /**
-   * Get reputation registry contract
-   */
-  getReputationRegistry(): ethers.Contract {
-    if (!this._reputationRegistry) {
+  reputationRegistryAddress(): Address {
       const address = this._registries.REPUTATION;
-      if (!address) {
-        throw new Error(`No reputation registry address for chain ${this._chainId}`);
-      }
-      this._reputationRegistry = this._web3Client.getContract(address, REPUTATION_REGISTRY_ABI);
-
-      // Update feedback manager
-      this._feedbackManager.setReputationRegistry(this._reputationRegistry);
-    }
-    return this._reputationRegistry;
+    if (!address) throw new Error(`No reputation registry address for chain ${this._chainId}`);
+    this._feedbackManager.setReputationRegistryAddress(address);
+    return address;
   }
 
-  /**
-   * Get validation registry contract
-   */
-  getValidationRegistry(): ethers.Contract {
-    if (!this._validationRegistry) {
+  validationRegistryAddress(): Address {
       const address = this._registries.VALIDATION;
-      if (!address) {
-        throw new Error(`No validation registry address for chain ${this._chainId}`);
-      }
-      this._validationRegistry = this._web3Client.getContract(address, VALIDATION_REGISTRY_ABI);
-    }
-    return this._validationRegistry;
+    if (!address) throw new Error(`No validation registry address for chain ${this._chainId}`);
+    return address;
   }
 
   /**
    * Check if SDK is in read-only mode (no signer)
    */
   get isReadOnly(): boolean {
-    return !this._web3Client.address;
+    return !this._hasSignerConfig;
   }
 
   // Agent lifecycle methods
@@ -288,8 +273,12 @@ export class SDK {
     // Get agent URI from contract
     let agentURI: string;
     try {
-      const identityRegistry = this.getIdentityRegistry();
-      agentURI = await this._web3Client.callContract(identityRegistry, 'tokenURI', BigInt(tokenId));
+      agentURI = await this._chainClient.readContract<string>({
+        address: this.identityRegistryAddress(),
+        abi: IDENTITY_REGISTRY_ABI,
+        functionName: 'tokenURI',
+        args: [BigInt(tokenId)],
+      });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       throw new Error(`Failed to load agent ${agentId}: ${errorMessage}`);
@@ -418,8 +407,12 @@ export class SDK {
    */
   async isAgentOwner(agentId: AgentId, address: Address): Promise<boolean> {
     const { tokenId } = parseAgentId(agentId);
-    const identityRegistry = this.getIdentityRegistry();
-    const owner = await this._web3Client.callContract(identityRegistry, 'ownerOf', BigInt(tokenId));
+    const owner = await this._chainClient.readContract<string>({
+      address: this.identityRegistryAddress(),
+      abi: IDENTITY_REGISTRY_ABI,
+      functionName: 'ownerOf',
+      args: [BigInt(tokenId)],
+    });
     return owner.toLowerCase() === address.toLowerCase();
   }
 
@@ -428,8 +421,12 @@ export class SDK {
    */
   async getAgentOwner(agentId: AgentId): Promise<Address> {
     const { tokenId } = parseAgentId(agentId);
-    const identityRegistry = this.getIdentityRegistry();
-    return await this._web3Client.callContract(identityRegistry, 'ownerOf', BigInt(tokenId));
+    return await this._chainClient.readContract<Address>({
+      address: this.identityRegistryAddress(),
+      abi: IDENTITY_REGISTRY_ABI,
+      functionName: 'ownerOf',
+      args: [BigInt(tokenId)],
+    });
   }
 
   // Feedback methods
@@ -455,8 +452,8 @@ export class SDK {
     feedbackFile?: FeedbackFileInput
   ): Promise<Feedback> {
     // Update feedback manager with registries
-    this._feedbackManager.setReputationRegistry(this.getReputationRegistry());
-    this._feedbackManager.setIdentityRegistry(this.getIdentityRegistry());
+    this._feedbackManager.setReputationRegistryAddress(this.reputationRegistryAddress());
+    this._feedbackManager.setIdentityRegistryAddress(this.identityRegistryAddress());
 
     return this._feedbackManager.giveFeedback(agentId, score, tag1, tag2, endpoint, feedbackFile);
   }
@@ -500,7 +497,7 @@ export class SDK {
     response: { uri: URI; hash: string }
   ): Promise<string> {
     // Update feedback manager with registries
-    this._feedbackManager.setReputationRegistry(this.getReputationRegistry());
+    this._feedbackManager.setReputationRegistryAddress(this.reputationRegistryAddress());
 
     return this._feedbackManager.appendResponse(agentId, clientAddress, feedbackIndex, response.uri, response.hash);
   }
@@ -510,7 +507,7 @@ export class SDK {
    */
   async revokeFeedback(agentId: AgentId, feedbackIndex: number): Promise<string> {
     // Update feedback manager with registries
-    this._feedbackManager.setReputationRegistry(this.getReputationRegistry());
+    this._feedbackManager.setReputationRegistryAddress(this.reputationRegistryAddress());
 
     return this._feedbackManager.revokeFeedback(agentId, feedbackIndex);
   }
@@ -524,7 +521,7 @@ export class SDK {
     tag2?: string
   ): Promise<{ count: number; averageScore: number }> {
     // Update feedback manager with registries
-    this._feedbackManager.setReputationRegistry(this.getReputationRegistry());
+    this._feedbackManager.setReputationRegistryAddress(this.reputationRegistryAddress());
 
     return this._feedbackManager.getReputationSummary(agentId, tag1, tag2);
   }
@@ -741,8 +738,8 @@ export class SDK {
   }
 
   // Expose clients for advanced usage
-  get web3Client(): Web3Client {
-    return this._web3Client;
+  get chainClient(): ChainClient {
+    return this._chainClient;
   }
 
   get ipfsClient(): IPFSClient | undefined {

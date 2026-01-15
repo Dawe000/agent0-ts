@@ -2,7 +2,6 @@
  * Feedback management system for Agent0 SDK
  */
 
-import { ethers } from 'ethers';
 import type {
   Feedback,
   SearchFeedbackParams,
@@ -10,11 +9,13 @@ import type {
   FeedbackFileInput,
 } from '../models/interfaces.js';
 import type { AgentId, Address, URI, Timestamp, IdemKey } from '../models/types.js';
-import type { Web3Client } from './web3-client.js';
+import type { ChainClient } from './chain-client.js';
 import type { IPFSClient } from './ipfs-client.js';
 import type { SubgraphClient } from './subgraph-client.js';
 import { parseAgentId, formatAgentId, formatFeedbackId, parseFeedbackId } from '../utils/id-format.js';
 import { DEFAULTS } from '../utils/constants.js';
+import { REPUTATION_REGISTRY_ABI } from './contracts.js';
+import { decodeEventLog, type Hex } from 'viem';
 
 /**
  * Manages feedback operations for the Agent0 SDK
@@ -24,10 +25,10 @@ export class FeedbackManager {
   private defaultChainId?: number;
 
   constructor(
-    private web3Client: Web3Client,
+    private chainClient: ChainClient,
     private ipfsClient?: IPFSClient,
-    private reputationRegistry?: ethers.Contract,
-    private identityRegistry?: ethers.Contract,
+    private reputationRegistryAddress?: Address,
+    private identityRegistryAddress?: Address,
     private subgraphClient?: SubgraphClient
   ) {}
 
@@ -45,15 +46,15 @@ export class FeedbackManager {
   /**
    * Set reputation registry contract (for lazy initialization)
    */
-  setReputationRegistry(registry: ethers.Contract): void {
-    this.reputationRegistry = registry;
+  setReputationRegistryAddress(address: Address): void {
+    this.reputationRegistryAddress = address;
   }
 
   /**
    * Set identity registry contract (for lazy initialization)
    */
-  setIdentityRegistry(registry: ethers.Contract): void {
-    this.identityRegistry = registry;
+  setIdentityRegistryAddress(address: Address): void {
+    this.identityRegistryAddress = address;
   }
 
   /**
@@ -103,18 +104,14 @@ export class FeedbackManager {
     const { tokenId, chainId: agentChainId } = parseAgentId(agentId);
 
     // Get client address (the one giving feedback)
-    const clientAddress = this.web3Client.address;
-    if (!clientAddress) {
-      throw new Error('No signer available. Cannot give feedback without a wallet.');
-    }
+    const clientAddress = await this.chainClient.ensureAddress();
 
     // Ensure the SDK/provider is configured for the same chain as the agentId we are targeting.
     // (giveFeedback is an on-chain tx, so we must settle on the agent's chain).
-    const providerChainId = Number((await this.web3Client.provider.getNetwork()).chainId);
-    if (providerChainId !== agentChainId) {
+    if (this.chainClient.chainId !== agentChainId) {
       throw new Error(
         `Chain mismatch for giveFeedback: agentId=${agentId} targets chainId=${agentChainId}, ` +
-          `but the SDK provider is connected to chainId=${providerChainId}. ` +
+          `but the SDK is configured for chainId=${this.chainClient.chainId}. ` +
           `Initialize SDK with chainId=${agentChainId} and the correct rpcUrl.`
       );
     }
@@ -122,15 +119,15 @@ export class FeedbackManager {
     // Get current feedback index for this client-agent pair
     let feedbackIndex: number;
     try {
-      if (!this.reputationRegistry) {
+      if (!this.reputationRegistryAddress) {
         throw new Error('Reputation registry not available');
       }
-      const lastIndex = await this.web3Client.callContract(
-        this.reputationRegistry,
-        'getLastIndex',
-        BigInt(tokenId),
-        clientAddress
-      );
+      const lastIndex = await this.chainClient.readContract<bigint>({
+        address: this.reputationRegistryAddress,
+        abi: REPUTATION_REGISTRY_ABI,
+        functionName: 'getLastIndex',
+        args: [BigInt(tokenId), clientAddress],
+      });
       feedbackIndex = Number(lastIndex) + 1;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -154,9 +151,7 @@ export class FeedbackManager {
       try {
         // Build an ERC-8004 compliant off-chain feedback file:
         // include MUST fields from the spec + optional on-chain fields, then append rich off-chain fields.
-        const identityRegistryAddress = this.identityRegistry
-          ? (this.identityRegistry.target as string)
-          : '0x0';
+        const identityRegistryAddress = this.identityRegistryAddress || '0x0000000000000000000000000000000000000000';
 
         const createdAt =
           typeof (feedbackFile as any)?.createdAt === 'string'
@@ -184,7 +179,7 @@ export class FeedbackManager {
         feedbackUri = `ipfs://${cid}`;
         // Calculate hash of sorted JSON
         const sortedJson = JSON.stringify(fileForStorage, Object.keys(fileForStorage).sort());
-        feedbackHash = this.web3Client.keccak256(sortedJson);
+        feedbackHash = this.chainClient.keccak256Utf8(sortedJson);
       } catch (error) {
         // Failed to store on IPFS - log error but continue without IPFS storage
         const errorMessage = error instanceof Error ? error.message : String(error);
@@ -198,26 +193,27 @@ export class FeedbackManager {
     }
 
     // Submit to blockchain
-    if (!this.reputationRegistry) {
+    if (!this.reputationRegistryAddress) {
       throw new Error('Reputation registry not available');
     }
 
     try {
-      const txHash = await this.web3Client.transactContract(
-        this.reputationRegistry,
-        'giveFeedback',
-        {},
-        BigInt(tokenId),
-        scoreOnChain,
-        tag1OnChain,
-        tag2OnChain,
-        endpointOnChain,
-        feedbackUri,
-        feedbackHash
-      );
+      const txHash = await this.chainClient.writeContract({
+        address: this.reputationRegistryAddress,
+        abi: REPUTATION_REGISTRY_ABI,
+        functionName: 'giveFeedback',
+        args: [
+          BigInt(tokenId),
+          scoreOnChain,
+          tag1OnChain,
+          tag2OnChain,
+          endpointOnChain,
+          feedbackUri,
+          feedbackHash,
+        ],
+      });
 
-      // Wait for transaction confirmation
-      await this.web3Client.waitForTransaction(txHash);
+      await this.chainClient.waitForTransaction({ hash: txHash });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       throw new Error(`Failed to submit feedback to blockchain: ${errorMessage}`);
@@ -285,20 +281,21 @@ export class FeedbackManager {
     clientAddress: Address,
     feedbackIndex: number
   ): Promise<Feedback> {
-    if (!this.reputationRegistry) {
+    if (!this.reputationRegistryAddress) {
       throw new Error('Reputation registry not available');
     }
 
     const { tokenId } = parseAgentId(agentId);
 
     try {
-      const [score, tag1, tag2, isRevoked] = await this.web3Client.callContract(
-        this.reputationRegistry,
-        'readFeedback',
-        BigInt(tokenId),
-        clientAddress,
-        BigInt(feedbackIndex)
-      );
+      const [score, tag1, tag2, isRevoked] = await this.chainClient.readContract<
+        readonly [number, string, string, boolean]
+      >({
+        address: this.reputationRegistryAddress,
+        abi: REPUTATION_REGISTRY_ABI,
+        functionName: 'readFeedback',
+        args: [BigInt(tokenId), clientAddress, BigInt(feedbackIndex)],
+      });
 
       const tags = [tag1, tag2].filter((t) => t && t !== '') as string[];
 
@@ -306,30 +303,39 @@ export class FeedbackManager {
       let endpoint: string | undefined;
       let fileURI: string | undefined;
       try {
-        const latestBlock = await this.web3Client.provider.getBlockNumber();
-        const fromBlock = Math.max(0, latestBlock - 200_000); // bounded scan to avoid huge log queries
-        const filter = (this.reputationRegistry as any).filters.NewFeedback(
-          BigInt(tokenId),
-          clientAddress,
-          null
-        );
-        const logs = await this.reputationRegistry.queryFilter(filter, fromBlock, latestBlock);
-        for (const ev of logs) {
-          // ethers typing can be EventLog OR raw Log; parse defensively.
-          let parsed: any | undefined;
+        const latestBlock = await this.chainClient.getBlockNumber();
+        const fromBlock = latestBlock > 200_000n ? latestBlock - 200_000n : 0n;
+        const logs = await this.chainClient.getEventLogs({
+          address: this.reputationRegistryAddress,
+          abi: REPUTATION_REGISTRY_ABI,
+          eventName: 'NewFeedback',
+          eventArgs: {
+            agentId: BigInt(tokenId),
+            clientAddress,
+          },
+          fromBlock,
+          toBlock: latestBlock,
+        });
+
+        for (const log of logs) {
           try {
-            parsed = (this.reputationRegistry as any).interface.parseLog(ev);
+            if (!log.topics || log.topics.length === 0) continue;
+            const parsed = decodeEventLog({
+              abi: REPUTATION_REGISTRY_ABI as any,
+              data: log.data as Hex,
+              topics: log.topics as [Hex, ...Hex[]],
+            }) as any;
+            if (parsed.eventName !== 'NewFeedback') continue;
+            const idx = parsed.args?.feedbackIndex;
+            if (idx !== undefined && Number(idx) === feedbackIndex) {
+              const ep = parsed.args?.endpoint;
+              const uri = parsed.args?.feedbackURI ?? parsed.args?.feedbackUri;
+              if (typeof ep === 'string' && ep.length > 0) endpoint = ep;
+              if (typeof uri === 'string' && uri.length > 0) fileURI = uri;
+              break;
+            }
           } catch {
             // ignore
-          }
-
-          const idx = parsed?.args?.feedbackIndex;
-          if (idx !== undefined && Number(idx) === feedbackIndex) {
-            const ep = parsed?.args?.endpoint;
-            const uri = parsed?.args?.feedbackURI ?? parsed?.args?.feedbackUri;
-            if (typeof ep === 'string' && ep.length > 0) endpoint = ep;
-            if (typeof uri === 'string' && uri.length > 0) fileURI = uri;
-            break;
           }
         }
       } catch {
@@ -580,24 +586,19 @@ export class FeedbackManager {
     responseUri: URI,
     responseHash: string
   ): Promise<string> {
-    if (!this.reputationRegistry) {
+    if (!this.reputationRegistryAddress) {
       throw new Error('Reputation registry not available');
     }
 
     const { tokenId } = parseAgentId(agentId);
 
     try {
-      const txHash = await this.web3Client.transactContract(
-        this.reputationRegistry,
-        'appendResponse',
-        {},
-        BigInt(tokenId),
-        clientAddress,
-        BigInt(feedbackIndex),
-        responseUri,
-        responseHash
-      );
-
+      const txHash = await this.chainClient.writeContract({
+        address: this.reputationRegistryAddress,
+        abi: REPUTATION_REGISTRY_ABI,
+        functionName: 'appendResponse',
+        args: [BigInt(tokenId), clientAddress, BigInt(feedbackIndex), responseUri, responseHash],
+      });
       return txHash;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -609,27 +610,22 @@ export class FeedbackManager {
    * Revoke feedback
    */
   async revokeFeedback(agentId: AgentId, feedbackIndex: number): Promise<string> {
-    if (!this.reputationRegistry) {
+    if (!this.reputationRegistryAddress) {
       throw new Error('Reputation registry not available');
     }
 
     const { tokenId } = parseAgentId(agentId);
 
     // Get client address (the one revoking - must be the reviewer)
-    const clientAddress = this.web3Client.address;
-    if (!clientAddress) {
-      throw new Error('No signer available');
-    }
+    await this.chainClient.ensureAddress();
 
     try {
-      const txHash = await this.web3Client.transactContract(
-        this.reputationRegistry,
-        'revokeFeedback',
-        {},
-        BigInt(tokenId),
-        BigInt(feedbackIndex)
-      );
-
+      const txHash = await this.chainClient.writeContract({
+        address: this.reputationRegistryAddress,
+        abi: REPUTATION_REGISTRY_ABI,
+        functionName: 'revokeFeedback',
+        args: [BigInt(tokenId), BigInt(feedbackIndex)],
+      });
       return txHash;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -734,7 +730,7 @@ export class FeedbackManager {
     }
 
     // Fallback to blockchain query (requires matching chain)
-    if (!this.reputationRegistry) {
+    if (!this.reputationRegistryAddress) {
       throw new Error('Reputation registry not available');
     }
 
@@ -749,28 +745,23 @@ export class FeedbackManager {
     }
 
     try {
-      // Get all clients who gave feedback
-      const clientsResult = await this.web3Client.callContract(
-        this.reputationRegistry,
-        'getClients',
-        BigInt(tokenId)
-      );
+      const clients = await this.chainClient.readContract<readonly Address[]>({
+        address: this.reputationRegistryAddress,
+        abi: REPUTATION_REGISTRY_ABI,
+        functionName: 'getClients',
+        args: [BigInt(tokenId)],
+      });
 
-      // ethers may return a read-only Result array; copy to a plain mutable array
-      const clients = Array.isArray(clientsResult) ? Array.from(clientsResult) : [];
-
-      if (clients.length === 0) {
+      if (!clients || clients.length === 0) {
         return { count: 0, averageScore: 0 };
       }
 
-      const [count, averageScore] = await this.web3Client.callContract(
-        this.reputationRegistry,
-        'getSummary',
-        BigInt(tokenId),
-        clients,
-        tag1 || '',
-        tag2 || ''
-      );
+      const [count, averageScore] = await this.chainClient.readContract<readonly [bigint, number]>({
+        address: this.reputationRegistryAddress,
+        abi: REPUTATION_REGISTRY_ABI,
+        functionName: 'getSummary',
+        args: [BigInt(tokenId), clients, tag1 || '', tag2 || ''],
+      });
 
       return {
         count: Number(count),

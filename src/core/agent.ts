@@ -2,7 +2,8 @@
  * Agent class for managing individual agents
  */
 
-import { ethers } from 'ethers';
+import { decodeEventLog, getAddress, hashDomain, type Hex } from 'viem';
+import { privateKeyToAccount } from 'viem/accounts';
 import type {
   RegistrationFile,
   Endpoint,
@@ -14,6 +15,9 @@ import { EndpointCrawler } from './endpoint-crawler.js';
 import { parseAgentId } from '../utils/id-format.js';
 import { TIMEOUTS } from '../utils/constants.js';
 import { validateSkill, validateDomain } from './oasf-validator.js';
+import type { ChainReceipt } from './chain-client.js';
+import { IDENTITY_REGISTRY_ABI } from './contracts.js';
+import { normalizeEcdsaSignature, recoverTypedDataSigner } from '../utils/signatures.js';
 
 /**
  * Agent class for managing individual agents
@@ -375,7 +379,11 @@ export class Agent {
     newWallet: Address,
     opts?: {
       deadline?: number;
-      newWalletSigner?: string | ethers.Signer;
+      /**
+       * If the new wallet is not the same as the SDK signer, pass a private key for the new wallet
+       * (or pass `signature` directly from an external signer).
+       */
+      newWalletPrivateKey?: string;
       signature?: string | Uint8Array;
     }
   ): Promise<string> {
@@ -386,32 +394,33 @@ export class Agent {
       );
     }
 
-    if (!this.sdk.web3Client.signer) {
-      throw new Error('No SDK signer available to submit setAgentWallet transaction');
+    if (this.sdk.isReadOnly) {
+      throw new Error('No signer configured to submit setAgentWallet transaction');
     }
 
     // Validate newWallet address
-    if (!this.sdk.web3Client.isAddress(newWallet)) {
+    if (!this.sdk.chainClient.isAddress(newWallet)) {
       throw new Error(`Invalid newWallet address: ${newWallet}`);
     }
 
     const { tokenId } = parseAgentId(this.registrationFile.agentId);
-    const identityRegistry = this.sdk.getIdentityRegistry();
+    const identityRegistryAddress = this.sdk.identityRegistryAddress();
 
     // Optional short-circuit if already set
     try {
-      const currentWallet = await this.sdk.web3Client.callContract(
-        identityRegistry,
-        'getAgentWallet',
-        BigInt(tokenId)
-      );
+      const currentWallet = await this.sdk.chainClient.readContract<string>({
+        address: identityRegistryAddress,
+        abi: IDENTITY_REGISTRY_ABI,
+        functionName: 'getAgentWallet',
+        args: [BigInt(tokenId)],
+      });
       if (
         typeof currentWallet === 'string' &&
         currentWallet.toLowerCase() === newWallet.toLowerCase()
       ) {
         const chainId = await this.sdk.chainId();
         this.registrationFile.walletAddress = newWallet;
-    this.registrationFile.walletChainId = chainId;
+        this.registrationFile.walletChainId = chainId;
         this.registrationFile.updatedAt = Math.floor(Date.now() / 1000);
         return '';
       }
@@ -421,8 +430,7 @@ export class Agent {
 
     // Deadline: contract enforces a short window. Use chain time (latest block timestamp)
     // rather than local system time to avoid clock skew causing reverts.
-    const latestBlock = await this.sdk.web3Client.provider.getBlock('latest');
-    const chainNow = latestBlock?.timestamp ?? Math.floor(Date.now() / 1000);
+    const chainNow = Number(await this.sdk.chainClient.getBlockTimestamp('latest'));
     const deadlineValue = opts?.deadline ?? chainNow + 60;
     if (deadlineValue < chainNow) {
       throw new Error(`Invalid deadline: ${deadlineValue} is in the past (chain time: ${chainNow})`);
@@ -436,21 +444,26 @@ export class Agent {
     }
 
     const chainId = await this.sdk.chainId();
-    const verifyingContract = await identityRegistry.getAddress();
-    const owner = await this.sdk.web3Client.callContract(
-      identityRegistry,
-      'ownerOf',
-      BigInt(tokenId)
-    );
+    const verifyingContract = identityRegistryAddress;
+    const owner = await this.sdk.chainClient.readContract<Address>({
+      address: identityRegistryAddress,
+      abi: IDENTITY_REGISTRY_ABI,
+      functionName: 'ownerOf',
+      args: [BigInt(tokenId)],
+    });
     
     // Prefer reading the actual EIP-712 domain from the contract (if supported)
     // to avoid any future divergence in name/version.
     let domainName: string | undefined;
     let domainVersion: string | undefined;
     try {
-      const domainInfo = await this.sdk.web3Client.callContract(identityRegistry, 'eip712Domain');
+      const domainInfo = await this.sdk.chainClient.readContract<any>({
+        address: identityRegistryAddress,
+        abi: IDENTITY_REGISTRY_ABI,
+        functionName: 'eip712Domain',
+        args: [],
+      });
       // eip712Domain() returns: (fields, name, version, chainId, verifyingContract, salt, extensions)
-      // In ethers v6 this is typically a Result array-like object.
       domainName = domainInfo?.name ?? domainInfo?.[1];
       domainVersion = domainInfo?.version ?? domainInfo?.[2];
     } catch {
@@ -461,55 +474,41 @@ export class Agent {
     // deterministically from common candidates.
     let domainSeparatorOnChain: string | undefined;
     try {
-      domainSeparatorOnChain = await this.sdk.web3Client.callContract(identityRegistry, 'DOMAIN_SEPARATOR');
+      domainSeparatorOnChain = await this.sdk.chainClient.readContract<string>({
+        address: identityRegistryAddress,
+        abi: IDENTITY_REGISTRY_ABI,
+        functionName: 'DOMAIN_SEPARATOR',
+        args: [],
+      });
     } catch {
       // ignore
     }
 
-    // Preflight estimateGas to catch signature/domain/type mismatches early.
-    const estimateSetAgentWallet = async (sig: string) => {
-      const fn = (identityRegistry as any).getFunction
-        ? (identityRegistry as any).getFunction('setAgentWallet')
-        : null;
-      if (fn?.estimateGas) {
-        await fn.estimateGas(BigInt(tokenId), newWallet, BigInt(deadlineValue), sig);
-      } else if ((identityRegistry as any).estimateGas?.setAgentWallet) {
-        await (identityRegistry as any).estimateGas.setAgentWallet(
-          BigInt(tokenId),
-          newWallet,
-          BigInt(deadlineValue),
-          sig
-        );
-      }
-    };
-
     // Determine signature
-    let signature: string | undefined;
+    let signature: `0x${string}` | undefined;
     if (opts?.signature) {
-      signature =
-        typeof opts.signature === 'string' ? opts.signature : ethers.hexlify(opts.signature);
-      if (!signature.startsWith('0x')) {
-        signature = `0x${signature}`;
-      }
+      const sig =
+        typeof opts.signature === 'string'
+          ? (opts.signature.startsWith('0x') ? opts.signature : `0x${opts.signature}`)
+          : (() => {
+              let hex = '0x';
+              for (const b of opts.signature as Uint8Array) {
+                hex += b.toString(16).padStart(2, '0');
+              }
+              return hex;
+            })();
+      signature = normalizeEcdsaSignature(sig as Hex) as `0x${string}`;
     } else {
       // The new wallet MUST sign (EOA path). Support a few domain/type variants to match deployed registries.
-      const signerForNewWallet: string | ethers.Signer | undefined = opts?.newWalletSigner;
-      const sdkSignerAddress = await this.sdk.web3Client.getAddress();
+      const sdkSignerAddress = await this.sdk.chainClient.getAddress();
 
       // If no explicit signer was provided, allow the one-wallet case (SDK signer == newWallet)
-      if (!signerForNewWallet) {
+      if (!opts?.newWalletPrivateKey) {
         if (!sdkSignerAddress || sdkSignerAddress.toLowerCase() !== newWallet.toLowerCase()) {
           throw new Error(
             `The new wallet must sign the EIP-712 message. ` +
-              `Pass opts.newWalletSigner (private key or Signer) or opts.signature. ` +
+              `Pass opts.newWalletPrivateKey or opts.signature. ` +
               `SDK signer is ${sdkSignerAddress || 'unknown'}, newWallet is ${newWallet}.`
-          );
-        }
-      } else {
-        const signerAddress = await this.sdk.web3Client.addressOf(signerForNewWallet as any);
-        if (signerAddress.toLowerCase() !== newWallet.toLowerCase()) {
-          throw new Error(
-            `newWalletSigner address (${signerAddress}) does not match newWallet (${newWallet}).`
           );
         }
       }
@@ -526,12 +525,12 @@ export class Agent {
           domainVersions.map((dv) => ({ dn, dv }))
         ).find(({ dn, dv }) => {
           try {
-            const computed = ethers.TypedDataEncoder.hashDomain({
+            const computed = hashDomain({
               name: dn,
               version: dv,
               chainId,
-              verifyingContract,
-            });
+              verifyingContract: verifyingContract,
+            } as any);
             return computed.toLowerCase() === String(domainSeparatorOnChain).toLowerCase();
           } catch {
             return false;
@@ -544,75 +543,95 @@ export class Agent {
       }
 
       // Try (with owner) first, then (no owner) legacy; and try each domain name.
-      const variants: Array<{ domain: any; types: any; message: any }> = [];
+      const variants: Array<{ domain: any; types: any; primaryType: string; message: any }> = [];
       for (const dn of domainNames) {
         for (const dv of domainVersions) {
-          variants.push(
-            this.sdk.web3Client.buildAgentWalletSetTypedData({
+          const domain = {
+            name: dn,
+            version: dv,
+            chainId,
+            verifyingContract,
+          };
+          variants.push({
+            domain,
+            primaryType: 'AgentWalletSet',
+            types: {
+              AgentWalletSet: [
+                { name: 'agentId', type: 'uint256' },
+                { name: 'newWallet', type: 'address' },
+                { name: 'owner', type: 'address' },
+                { name: 'deadline', type: 'uint256' },
+              ],
+            },
+            message: {
               agentId: BigInt(tokenId),
               newWallet,
               owner,
               deadline: BigInt(deadlineValue),
-              chainId,
-              verifyingContract,
-              domainName: dn,
-              domainVersion: dv,
-            })
-          );
-          variants.push(
-            this.sdk.web3Client.buildAgentWalletSetTypedDataNoOwner({
+            },
+          });
+          variants.push({
+            domain,
+            primaryType: 'AgentWalletSet',
+            types: {
+              AgentWalletSet: [
+                { name: 'agentId', type: 'uint256' },
+                { name: 'newWallet', type: 'address' },
+                { name: 'deadline', type: 'uint256' },
+              ],
+            },
+            message: {
               agentId: BigInt(tokenId),
               newWallet,
               deadline: BigInt(deadlineValue),
-              chainId,
-              verifyingContract,
-              domainName: dn,
-              domainVersion: dv,
-            })
-          );
+            },
+          });
         }
       }
 
       let lastError: unknown;
-      const trySignAndEstimate = async (signerMode: 'newWallet' | 'owner') => {
-        for (const v of variants) {
-          try {
-            const sig =
-              signerMode === 'newWallet'
-                ? signerForNewWallet
-                  ? await this.sdk.web3Client.signTypedDataWith(
-                      signerForNewWallet as any,
-                      v.domain,
-                      v.types,
-                      v.message
-                    )
-                  : await this.sdk.web3Client.signTypedData(v.domain, v.types, v.message)
-                : await this.sdk.web3Client.signTypedData(v.domain, v.types, v.message);
-
-            const recovered = this.sdk.web3Client.recoverTypedDataSigner(v.domain, v.types, v.message, sig);
-            const expected =
-              signerMode === 'newWallet' ? newWallet.toLowerCase() : (sdkSignerAddress || '').toLowerCase();
-            if (!expected || recovered.toLowerCase() !== expected) {
-              throw new Error(
-                `EIP-712 signature recovery mismatch (${signerMode} signing): recovered ${recovered} but expected ${expected || 'unknown'}`
-              );
-            }
-
-            await estimateSetAgentWallet(sig);
-            signature = sig;
-            return;
-          } catch (e) {
-            lastError = e;
+      for (const v of variants) {
+        try {
+          let sig: `0x${string}`;
+          if (opts?.newWalletPrivateKey) {
+            const acc = privateKeyToAccount(
+              (opts.newWalletPrivateKey.startsWith('0x')
+                ? opts.newWalletPrivateKey
+                : `0x${opts.newWalletPrivateKey}`) as Hex
+            );
+            sig = normalizeEcdsaSignature(
+              (await acc.signTypedData({
+                domain: v.domain,
+                types: v.types,
+                primaryType: v.primaryType,
+                message: v.message,
+              })) as Hex
+            ) as `0x${string}`;
+          } else {
+            sig = await this.sdk.chainClient.signTypedData({
+              domain: v.domain,
+              types: v.types,
+              primaryType: v.primaryType,
+              message: v.message,
+            });
           }
+
+          const recovered = await recoverTypedDataSigner({
+            domain: v.domain,
+            types: v.types,
+            primaryType: v.primaryType,
+            message: v.message,
+            signature: sig as Hex,
+          });
+          if (recovered.toLowerCase() !== getAddress(newWallet).toLowerCase()) {
+            throw new Error(`EIP-712 recovery mismatch: recovered ${recovered}, expected ${newWallet}`);
+          }
+
+          signature = sig;
+          break;
+        } catch (e) {
+          lastError = e;
         }
-      };
-
-      // Preferred: newWallet signs (spec-aligned)
-      await trySignAndEstimate('newWallet');
-
-      // Fallback: some legacy deployments may require the agent owner (tx sender) to sign instead.
-      if (!signature && sdkSignerAddress) {
-        await trySignAndEstimate('owner');
       }
 
       if (!signature) {
@@ -622,15 +641,12 @@ export class Agent {
     }
 
     // Call contract function (tx sender is SDK signer: owner/operator)
-    const txHash = await this.sdk.web3Client.transactContract(
-      identityRegistry,
-      'setAgentWallet',
-      {},
-      BigInt(tokenId),
-      newWallet,
-      BigInt(deadlineValue),
-      signature
-    );
+    const txHash = await this.sdk.chainClient.writeContract({
+      address: identityRegistryAddress,
+      abi: IDENTITY_REGISTRY_ABI,
+      functionName: 'setAgentWallet',
+      args: [BigInt(tokenId), newWallet, BigInt(deadlineValue), signature],
+    });
 
     // Update local registration file
     this.registrationFile.walletAddress = newWallet;
@@ -726,7 +742,7 @@ export class Agent {
       // Agent already registered - update registration file and redeploy
       // Option 2D: Add logging and timeout handling
       const chainId = await this.sdk.chainId();
-      const identityRegistryAddress = await this.sdk.getIdentityRegistry().getAddress();
+      const identityRegistryAddress = this.sdk.identityRegistryAddress();
       
       const ipfsCid = await this.sdk.ipfsClient!.addRegistrationFile(
         this.registrationFile,
@@ -747,18 +763,17 @@ export class Agent {
       // Update agent URI on-chain
       const { tokenId } = parseAgentId(this.registrationFile.agentId);
       
-      const txHash = await this.sdk.web3Client.transactContract(
-        this.sdk.getIdentityRegistry(),
-        'setAgentURI',
-        {},
-        BigInt(tokenId),
-        `ipfs://${ipfsCid}`
-      );
+      const txHash = await this.sdk.chainClient.writeContract({
+        address: identityRegistryAddress,
+        abi: IDENTITY_REGISTRY_ABI,
+        functionName: 'setAgentURI',
+        args: [BigInt(tokenId), `ipfs://${ipfsCid}`],
+      });
       
       // Wait for transaction to be confirmed (30 second timeout like Python)
       // If timeout, continue - transaction was sent and will eventually confirm
       try {
-        await this.sdk.web3Client.waitForTransaction(txHash, TIMEOUTS.TRANSACTION_WAIT);
+        await this.sdk.chainClient.waitForTransaction({ hash: txHash, timeoutMs: TIMEOUTS.TRANSACTION_WAIT });
       } catch {
         // Transaction was sent and will eventually confirm - continue silently
       }
@@ -777,7 +792,7 @@ export class Agent {
 
       // Step 2: Upload to IPFS
       const chainId = await this.sdk.chainId();
-      const identityRegistryAddress = await this.sdk.getIdentityRegistry().getAddress();
+      const identityRegistryAddress = this.sdk.identityRegistryAddress();
       const ipfsCid = await this.sdk.ipfsClient!.addRegistrationFile(
         this.registrationFile,
         chainId,
@@ -786,16 +801,15 @@ export class Agent {
 
       // Step 3: Set agent URI on-chain
       const { tokenId } = parseAgentId(this.registrationFile.agentId!);
-      const txHash = await this.sdk.web3Client.transactContract(
-        this.sdk.getIdentityRegistry(),
-        'setAgentURI',
-        {},
-        BigInt(tokenId),
-        `ipfs://${ipfsCid}`
-      );
+      const txHash = await this.sdk.chainClient.writeContract({
+        address: identityRegistryAddress,
+        abi: IDENTITY_REGISTRY_ABI,
+        functionName: 'setAgentURI',
+        args: [BigInt(tokenId), `ipfs://${ipfsCid}`],
+      });
       
       // Wait for transaction to be confirmed
-      await this.sdk.web3Client.waitForTransaction(txHash);
+      await this.sdk.chainClient.waitForTransaction({ hash: txHash });
 
       // Clear dirty flags
       this._lastRegisteredWallet = this.walletAddress;
@@ -835,13 +849,13 @@ export class Agent {
     }
 
     const { tokenId } = parseAgentId(this.registrationFile.agentId);
-    await this.sdk.web3Client.transactContract(
-      this.sdk.getIdentityRegistry(),
-      'setAgentURI',
-      {},
-      BigInt(tokenId),
-      agentURI
-    );
+    const identityRegistryAddress = this.sdk.identityRegistryAddress();
+    await this.sdk.chainClient.writeContract({
+      address: identityRegistryAddress,
+      abi: IDENTITY_REGISTRY_ABI,
+      functionName: 'setAgentURI',
+      args: [BigInt(tokenId), agentURI],
+    });
 
     this.registrationFile.agentURI = agentURI;
     this.registrationFile.updatedAt = Math.floor(Date.now() / 1000);
@@ -856,14 +870,11 @@ export class Agent {
     }
 
     const { tokenId } = parseAgentId(this.registrationFile.agentId);
-    const currentOwner = this.sdk.web3Client.address;
-    if (!currentOwner) {
-      throw new Error('No signer available');
-    }
+    const currentOwner = await this.sdk.chainClient.ensureAddress();
 
     // Validate address - normalize to lowercase first
     const normalizedAddress = newOwner.toLowerCase();
-    if (!this.sdk.web3Client.isAddress(normalizedAddress)) {
+    if (!this.sdk.chainClient.isAddress(normalizedAddress)) {
       throw new Error(`Invalid address: ${newOwner}`);
     }
 
@@ -873,22 +884,20 @@ export class Agent {
     }
 
     // Convert to checksum format
-    const checksumAddress = this.sdk.web3Client.toChecksumAddress(normalizedAddress);
+    const checksumAddress = this.sdk.chainClient.toChecksumAddress(normalizedAddress);
 
     // Validate not transferring to self
     if (checksumAddress.toLowerCase() === currentOwner.toLowerCase()) {
       throw new Error('Cannot transfer agent to yourself');
     }
 
-    const identityRegistry = this.sdk.getIdentityRegistry();
-    const txHash = await this.sdk.web3Client.transactContract(
-      identityRegistry,
-      'transferFrom',
-      {},
-      currentOwner,
-      checksumAddress,
-      BigInt(tokenId)
-    );
+    const identityRegistryAddress = this.sdk.identityRegistryAddress();
+    const txHash = await this.sdk.chainClient.writeContract({
+      address: identityRegistryAddress,
+      abi: IDENTITY_REGISTRY_ABI,
+      functionName: 'transferFrom',
+      args: [currentOwner, checksumAddress, BigInt(tokenId)],
+    });
 
     return {
       txHash,
@@ -905,31 +914,29 @@ export class Agent {
     // Collect metadata for registration
     const metadataEntries = this._collectMetadataForRegistration();
 
-    // Mint agent with metadata
-    const identityRegistry = this.sdk.getIdentityRegistry();
+    const identityRegistryAddress = this.sdk.identityRegistryAddress();
     
     // If we have metadata, use register(string, tuple[])
     // Otherwise use register() with no args
-    let txHash: string;
+    let txHash: `0x${string}`;
     if (metadataEntries.length > 0) {
-      txHash = await this.sdk.web3Client.transactContract(
-        identityRegistry,
-        'register',
-        {}, // Transaction options
-        '', // Empty tokenUri
-        metadataEntries
-      );
+      txHash = await this.sdk.chainClient.writeContract({
+        address: identityRegistryAddress,
+        abi: IDENTITY_REGISTRY_ABI,
+        functionName: 'register',
+        args: ['', metadataEntries],
+      });
     } else {
-      txHash = await this.sdk.web3Client.transactContract(
-        identityRegistry,
-        'register',
-        {} // Transaction options
-        // No arguments - calls register()
-      );
+      txHash = await this.sdk.chainClient.writeContract({
+        address: identityRegistryAddress,
+        abi: IDENTITY_REGISTRY_ABI,
+        functionName: 'register',
+        args: [],
+      });
     }
 
     // Wait for transaction
-    const receipt = await this.sdk.web3Client.waitForTransaction(txHash);
+    const receipt = await this.sdk.chainClient.waitForTransaction({ hash: txHash });
 
     // Extract agent ID from events
     const agentId = this._extractAgentIdFromReceipt(receipt);
@@ -944,18 +951,16 @@ export class Agent {
     // Collect metadata for registration
     const metadataEntries = this._collectMetadataForRegistration();
 
-    // Register with URI and metadata
-    const identityRegistry = this.sdk.getIdentityRegistry();
-    const txHash = await this.sdk.web3Client.transactContract(
-      identityRegistry,
-      'register',
-      {},
-      agentUri,
-      metadataEntries
-    );
+    const identityRegistryAddress = this.sdk.identityRegistryAddress();
+    const txHash: `0x${string}` = await this.sdk.chainClient.writeContract({
+      address: identityRegistryAddress,
+      abi: IDENTITY_REGISTRY_ABI,
+      functionName: 'register',
+      args: [agentUri, metadataEntries],
+    });
 
     // Wait for transaction
-    const receipt = await this.sdk.web3Client.waitForTransaction(txHash);
+    const receipt = await this.sdk.chainClient.waitForTransaction({ hash: txHash });
 
     // Extract agent ID from events
     const agentId = this._extractAgentIdFromReceipt(receipt);
@@ -972,25 +977,23 @@ export class Agent {
   private async _updateMetadataOnChain(): Promise<void> {
     const metadataEntries = this._collectMetadataForRegistration();
     const { tokenId } = parseAgentId(this.registrationFile.agentId!);
-    const identityRegistry = this.sdk.getIdentityRegistry();
+    const identityRegistryAddress = this.sdk.identityRegistryAddress();
 
     // Update metadata one by one (like Python SDK)
     // Only send transactions for dirty (changed) metadata keys
     for (const entry of metadataEntries) {
       if (this._dirtyMetadata.has(entry.metadataKey)) {
-        const txHash = await this.sdk.web3Client.transactContract(
-          identityRegistry,
-          'setMetadata',
-          {},
-          BigInt(tokenId),
-          entry.metadataKey,
-          entry.metadataValue
-        );
+        const txHash: `0x${string}` = await this.sdk.chainClient.writeContract({
+          address: identityRegistryAddress,
+          abi: IDENTITY_REGISTRY_ABI,
+          functionName: 'setMetadata',
+          args: [BigInt(tokenId), entry.metadataKey, entry.metadataValue],
+        });
 
         // Wait with 30 second timeout (like Python SDK)
         // If timeout, log warning but continue - transaction was sent and will eventually confirm
         try {
-          await this.sdk.web3Client.waitForTransaction(txHash, TIMEOUTS.TRANSACTION_WAIT);
+          await this.sdk.chainClient.waitForTransaction({ hash: txHash, timeoutMs: TIMEOUTS.TRANSACTION_WAIT });
         } catch (error) {
           // Transaction was sent and will eventually confirm - continue silently
         }
@@ -1027,21 +1030,23 @@ export class Agent {
     return entries;
   }
 
-  private _extractAgentIdFromReceipt(receipt: ethers.ContractTransactionReceipt): bigint {
-    // Parse events from receipt to find Registered event
-    const identityRegistry = this.sdk.getIdentityRegistry();
+  private _extractAgentIdFromReceipt(receipt: ChainReceipt): bigint {
     const transferEventTopic = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'; // Transfer(address,address,uint256)
 
     // Find the event in the logs
     for (const log of receipt.logs || []) {
       try {
-        // Try parsing as Registered event
-        const parsed = identityRegistry.interface.parseLog({
-          topics: Array.isArray(log.topics) ? log.topics.map((t: string | ethers.BytesLike) => typeof t === 'string' ? t : ethers.hexlify(t)) : log.topics || [],
-          data: typeof log.data === 'string' ? log.data : ethers.hexlify(log.data || '0x'),
-        });
-        if (parsed && parsed.name === 'Registered') {
-          return BigInt(parsed.args.agentId.toString());
+        if (!log.topics || log.topics.length === 0) {
+          continue;
+        }
+        const parsed = decodeEventLog({
+          abi: IDENTITY_REGISTRY_ABI as any,
+          data: log.data as Hex,
+          topics: log.topics as [Hex, ...Hex[]],
+        }) as any;
+        if (parsed && parsed.eventName === 'Registered') {
+          const agentId = parsed.args?.agentId;
+          if (agentId !== undefined) return BigInt(agentId);
         }
       } catch {
         // Not a Registered event, try Transfer event MP (ERC-721)
@@ -1049,10 +1054,10 @@ export class Agent {
           const topics = Array.isArray(log.topics) ? log.topics : [];
           // Transfer event has topic[0] = Transfer signature, topic[3] = tokenId (if 4 topics)
           if (topics.length >= 4) {
-            const topic0 = typeof topics[0] === 'string' ? topics[0] : topics[0].toString();
+            const topic0 = String(topics[0]);
             if (topic0 === transferEventTopic || topic0.toLowerCase() === transferEventTopic.toLowerCase()) {
               // Extract tokenId from topic[3]
-              const tokenIdHex = typeof topics[3] === 'string' ? topics[3] : topics[3].toString();
+              const tokenIdHex = String(topics[3]);
               // Remove 0x prefix if present and convert
               const tokenIdStr = tokenIdHex.startsWith('0x') ? tokenIdHex.slice(2) : tokenIdHex;
               return BigInt('0x' + tokenIdStr);

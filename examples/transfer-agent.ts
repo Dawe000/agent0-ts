@@ -8,16 +8,30 @@
  */
 
 import { SDK } from '../src/index';
-import { ethers } from 'ethers';
+import { privateKeyToAccount, generatePrivateKey } from 'viem/accounts';
 
 async function main() {
+  const rpcUrl = process.env.RPC_URL;
+  const privateKey = process.env.PRIVATE_KEY ?? process.env.AGENT_PRIVATE_KEY;
+  const pinataJwt = process.env.PINATA_JWT;
+
+  if (!rpcUrl || rpcUrl.trim() === '') {
+    throw new Error('RPC_URL is required for this example');
+  }
+  if (!privateKey || privateKey.trim() === '') {
+    throw new Error('PRIVATE_KEY (or AGENT_PRIVATE_KEY) is required for this example');
+  }
+  if (!pinataJwt || pinataJwt.trim() === '') {
+    throw new Error('PINATA_JWT is required for this example (registerIPFS uses pinata)');
+  }
+
   // Initialize SDK
   const sdk = new SDK({
     chainId: 11155111, // Ethereum Sepolia
-    rpcUrl: process.env.RPC_URL || 'https://sepolia.infura.io/v3/YOUR_PROJECT_ID',
-    signer: process.env.PRIVATE_KEY ?? process.env.AGENT_PRIVATE_KEY, // Required for transfers
+    rpcUrl,
+    privateKey, // Required for transfers
     ipfs: 'pinata',
-    pinataJwt: process.env.PINATA_JWT,
+    pinataJwt,
   });
 
   // Create + register a fresh agent (self-contained example)
@@ -41,7 +55,7 @@ async function main() {
   const newOwner =
     process.env.NEW_OWNER && process.env.NEW_OWNER.trim() !== ''
       ? process.env.NEW_OWNER
-      : ethers.Wallet.createRandom().address;
+      : privateKeyToAccount(generatePrivateKey()).address;
 
   // Transfer agent
   console.log(`\nTransferring agent ${agentId} to ${newOwner}...`);
@@ -54,7 +68,7 @@ async function main() {
 
   // Verify new owner
   // Note: transfers are asynchronous; wait for the tx to be mined before reading ownerOf.
-  await sdk.web3Client.waitForTransaction(result.txHash);
+  await sdk.chainClient.waitForTransaction({ hash: result.txHash as any });
 
   console.log('\nVerifying new owner...');
   let newOwnerAddress = await sdk.getAgentOwner(agentId);

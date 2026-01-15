@@ -11,13 +11,27 @@
 import { SDK } from '../src/index';
 
 async function main() {
+  const rpcUrl = process.env.RPC_URL;
+  const privateKey = process.env.PRIVATE_KEY ?? process.env.AGENT_PRIVATE_KEY;
+  const pinataJwt = process.env.PINATA_JWT;
+
+  if (!rpcUrl || rpcUrl.trim() === '') {
+    throw new Error('RPC_URL is required for this example');
+  }
+  if (!privateKey || privateKey.trim() === '') {
+    throw new Error('PRIVATE_KEY (or AGENT_PRIVATE_KEY) is required for this example (registration is a tx)');
+  }
+  if (!pinataJwt || pinataJwt.trim() === '') {
+    throw new Error('PINATA_JWT is required for this example (registerIPFS uses pinata)');
+  }
+
   // Initialize SDK
   const sdk = new SDK({
     chainId: 11155111, // Ethereum Sepolia
-    rpcUrl: process.env.RPC_URL || 'https://sepolia.infura.io/v3/YOUR_PROJECT_ID',
-    signer: process.env.PRIVATE_KEY ?? process.env.AGENT_PRIVATE_KEY, // Optional: private key for signing transactions
+    rpcUrl,
+    privateKey,
     ipfs: 'pinata', // or 'filecoinPin' or 'node'
-    pinataJwt: process.env.PINATA_JWT, // Required if ipfs='pinata'
+    pinataJwt, // Required if ipfs='pinata'
   });
 
   // Create a new agent

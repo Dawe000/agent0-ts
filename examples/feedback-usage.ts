@@ -12,13 +12,27 @@ import { SDK } from '../src/index';
 import { formatFeedbackId } from '../src/utils/id-format';
 
 async function main() {
+  const rpcUrl = process.env.RPC_URL;
+  const privateKey = process.env.PRIVATE_KEY ?? process.env.AGENT_PRIVATE_KEY;
+  const pinataJwt = process.env.PINATA_JWT;
+
+  if (!rpcUrl || rpcUrl.trim() === '') {
+    throw new Error('RPC_URL is required for this example');
+  }
+  if (!privateKey || privateKey.trim() === '') {
+    throw new Error('PRIVATE_KEY (or AGENT_PRIVATE_KEY) is required for this example (giving feedback is a tx)');
+  }
+  if (!pinataJwt || pinataJwt.trim() === '') {
+    throw new Error('PINATA_JWT is required for this example (it uses IPFS pinata for feedback files)');
+  }
+
   // Initialize SDK
   const sdk = new SDK({
     chainId: 11155111, // Ethereum Sepolia
-    rpcUrl: process.env.RPC_URL || 'https://sepolia.infura.io/v3/YOUR_PROJECT_ID',
-    signer: process.env.PRIVATE_KEY ?? process.env.AGENT_PRIVATE_KEY, // Required for submitting feedback
+    rpcUrl,
+    privateKey, // Required for submitting feedback
     ipfs: 'pinata', // Optional: for storing rich feedback data
-    pinataJwt: process.env.PINATA_JWT,
+    pinataJwt,
   });
 
   const agentId = '11155111:123'; // Replace with agent ID
