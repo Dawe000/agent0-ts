@@ -219,7 +219,9 @@ export class IPFSClient {
       );
     }
 
-    const fs = await import('fs');
+    // Import from separate module - cleaner separation and prevents bundler static analysis
+    const { loadNodeFS } = await import('./node-fs-loader.js');
+    const fs = await loadNodeFS();
     const data = fs.readFileSync(filepath, 'utf-8');
 
     if (this.provider === 'pinata') {
