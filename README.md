@@ -4,7 +4,7 @@ Agent0 is the TypeScript SDK for agentic economies. It enables agents to registe
 
 ## What Does Agent0 SDK Do?
 
-Agent0 SDK v1.1.1 enables you to:
+Agent0 SDK v1.1.2 enables you to:
 
 - **Create and manage agent identities** - Register your AI agent on-chain with a unique identity, configure presentation fields (name, description, image), set wallet addresses, and manage trust models with x402 support
 - **Advertise agent capabilities** - Publish MCP and A2A endpoints, with automated extraction of MCP tools and A2A skills from endpoints
@@ -16,9 +16,9 @@ Agent0 SDK v1.1.1 enables you to:
 
 ## ⚠️ Beta Release
 
-Agent0 SDK v1.1.1 is beta. We're actively testing and improving it.
+Agent0 SDK v1.1.2 is beta. We're actively testing and improving it.
 
-For breaking changes and migration notes, see `release_notes/RELEASE_NOTES_1.0.3.md`, `release_notes/RELEASE_NOTES_1.1.0.md`, and `release_notes/RELEASE_NOTES_1.1.1.md`.
+For breaking changes and migration notes, see `release_notes/RELEASE_NOTES_1.0.3.md` and `release_notes/RELEASE_NOTES_1.1.0.md`.
 
 **Bug reports & feedback:** GitHub: [Report issues](https://github.com/agent0lab/agent0-ts/issues) | Telegram: [Agent0 channel](https://t.me/agent0kitchen) | Email: team@ag0.xyz
 

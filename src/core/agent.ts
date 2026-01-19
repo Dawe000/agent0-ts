@@ -2,7 +2,7 @@
  * Agent class for managing individual agents
  */
 
-import { decodeEventLog, getAddress, hashDomain, type Hex } from 'viem';
+import { decodeEventLog, getAddress, hashDomain, toHex, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import type {
   RegistrationFile,
@@ -32,6 +32,18 @@ export class Agent {
   constructor(private sdk: SDK, registrationFile: RegistrationFile) {
     this.registrationFile = registrationFile;
     this._endpointCrawler = new EndpointCrawler(5000);
+  }
+
+  private async _waitForTransactionWithRetry(hash: `0x${string}`, timeoutMs: number): Promise<ChainReceipt> {
+    try {
+      return await this.sdk.chainClient.waitForTransaction({ hash, timeoutMs });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.toLowerCase().includes('timed out')) {
+        return await this.sdk.chainClient.waitForTransaction({ hash, timeoutMs: timeoutMs * 2 });
+      }
+      throw err;
+    }
   }
 
   // Read-only properties
@@ -773,7 +785,7 @@ export class Agent {
       // Wait for transaction to be confirmed (30 second timeout like Python)
       // If timeout, continue - transaction was sent and will eventually confirm
       try {
-        await this.sdk.chainClient.waitForTransaction({ hash: txHash, timeoutMs: TIMEOUTS.TRANSACTION_WAIT });
+        await this._waitForTransactionWithRetry(txHash, TIMEOUTS.TRANSACTION_WAIT);
       } catch {
         // Transaction was sent and will eventually confirm - continue silently
       }
@@ -809,7 +821,7 @@ export class Agent {
       });
       
       // Wait for transaction to be confirmed
-      await this.sdk.chainClient.waitForTransaction({ hash: txHash });
+      await this._waitForTransactionWithRetry(txHash, TIMEOUTS.TRANSACTION_WAIT);
 
       // Clear dirty flags
       this._lastRegisteredWallet = this.walletAddress;
@@ -935,8 +947,8 @@ export class Agent {
       });
     }
 
-    // Wait for transaction
-    const receipt = await this.sdk.chainClient.waitForTransaction({ hash: txHash });
+    // Wait for transaction (with timeout + retry for slow testnets)
+    const receipt = await this._waitForTransactionWithRetry(txHash, TIMEOUTS.TRANSACTION_WAIT);
 
     // Extract agent ID from events
     const agentId = this._extractAgentIdFromReceipt(receipt);
@@ -959,8 +971,8 @@ export class Agent {
       args: [agentUri, metadataEntries],
     });
 
-    // Wait for transaction
-    const receipt = await this.sdk.chainClient.waitForTransaction({ hash: txHash });
+    // Wait for transaction (with timeout + retry for slow testnets)
+    const receipt = await this._waitForTransactionWithRetry(txHash, TIMEOUTS.TRANSACTION_WAIT);
 
     // Extract agent ID from events
     const agentId = this._extractAgentIdFromReceipt(receipt);
@@ -993,7 +1005,7 @@ export class Agent {
         // Wait with 30 second timeout (like Python SDK)
         // If timeout, log warning but continue - transaction was sent and will eventually confirm
         try {
-          await this.sdk.chainClient.waitForTransaction({ hash: txHash, timeoutMs: TIMEOUTS.TRANSACTION_WAIT });
+          await this._waitForTransactionWithRetry(txHash, TIMEOUTS.TRANSACTION_WAIT);
         } catch (error) {
           // Transaction was sent and will eventually confirm - continue silently
         }
@@ -1001,8 +1013,8 @@ export class Agent {
     }
   }
 
-  private _collectMetadataForRegistration(): Array<{ metadataKey: string; metadataValue: Uint8Array }> {
-    const entries: Array<{ metadataKey: string; metadataValue: Uint8Array }> = [];
+  private _collectMetadataForRegistration(): Array<{ metadataKey: string; metadataValue: Hex }> {
+    const entries: Array<{ metadataKey: string; metadataValue: Hex }> = [];
 
     // Note: agentWallet is now a reserved metadata key that cannot be set via setMetadata()
     // It must be set using setAgentWallet() with EIP-712 signature verification
@@ -1024,7 +1036,8 @@ export class Agent {
         valueBytes = new TextEncoder().encode(JSON.stringify(value));
       }
 
-      entries.push({ metadataKey: key, metadataValue: valueBytes });
+      // viem expects Solidity `bytes` values as hex strings (`0x...`), not Uint8Array
+      entries.push({ metadataKey: key, metadataValue: toHex(valueBytes) });
     }
 
     return entries;

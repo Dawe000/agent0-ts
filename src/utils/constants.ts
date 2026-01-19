@@ -17,7 +17,7 @@ export const IPFS_GATEWAYS = [
 export const TIMEOUTS = {
   IPFS_GATEWAY: 10000, // 10 seconds
   PINATA_UPLOAD: 80000, // 80 seconds
-  TRANSACTION_WAIT: 30000, // 30 seconds
+  TRANSACTION_WAIT: 45000, // 45 seconds
   ENDPOINT_CRAWLER_DEFAULT: 5000, // 5 seconds
 } as const;
 
