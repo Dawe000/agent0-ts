@@ -64,7 +64,7 @@ import { SDK } from 'agent0-sdk';
 
 // Initialize SDK with IPFS and subgraph
 const sdk = new SDK({
-  chainId: 11155111, // Ethereum Sepolia testnet
+  chainId: 11155111, // Ethereum Sepolia testnet (use 1 for Ethereum Mainnet)
   rpcUrl: process.env.RPC_URL!,
   privateKey: process.env.PRIVATE_KEY ?? process.env.AGENT_PRIVATE_KEY, // Optional: for write operations
   ipfs: 'pinata', // Options: 'pinata', 'filecoinPin', 'node'
@@ -297,6 +297,7 @@ await regTx.waitConfirmed();
 
 The SDK supports querying agents across multiple blockchain networks:
 
+- **Ethereum Mainnet** (Chain ID: `1`)
 - **Ethereum Sepolia** (Chain ID: `11155111`)
 - **Base Sepolia** (Chain ID: `84532`)
 - **Polygon Amoy** (Chain ID: `80002`)
@@ -326,7 +327,7 @@ Search across multiple chains simultaneously:
 // Search across multiple chains
 const result = await sdk.searchAgents({
   active: true,
-  chains: [11155111, 84532]  // ETH Sepolia and Base Sepolia
+  chains: [1, 11155111, 84532]  // Ethereum Mainnet, ETH Sepolia, Base Sepolia
 });
 
 // Search all configured chains
