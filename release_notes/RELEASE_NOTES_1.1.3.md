@@ -9,3 +9,4 @@ This release is a **bugfix** for transaction confirmation in browser-wallet flow
   - If that times out and a browser `walletProvider` is configured, it retries receipt polling via a secondary public client using the same wallet provider transport.
 
 
+

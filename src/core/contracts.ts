@@ -474,6 +474,12 @@ export const VALIDATION_REGISTRY_ABI = [
  * Contract registry for different chains
  */
 export const DEFAULT_REGISTRIES: Record<ChainId, Record<string, string>> = {
+  1: {
+    // Ethereum Mainnet
+    IDENTITY: '0x8004A169FB4a3325136EB29fA0ceB6D2e539a432',
+    REPUTATION: '0x8004BAa17C55a88189AE136b182e5fdA19dE9b63',
+    // VALIDATION: indexing currently disabled in subgraph; set when deployed/enabled
+  },
   11155111: {
     // Ethereum Sepolia
     // Aligned with Python SDK (agent0-py) defaults
@@ -487,6 +493,7 @@ export const DEFAULT_REGISTRIES: Record<ChainId, Record<string, string>> = {
  * Default subgraph URLs for different chains
  */
 export const DEFAULT_SUBGRAPH_URLS: Record<ChainId, string> = {
+  1: 'https://gateway.thegraph.com/api/7fd2e7d89ce3ef24cd0d4590298f0b2c/subgraphs/id/FX78UzofJFr5h2Udznv7pZ2uLG1JBbYsPm7eecRSYnty', // Ethereum Mainnet
   11155111:
     'https://gateway.thegraph.com/api/00a452ad3cd1900273ea62c1bf283f93/subgraphs/id/6wQRC7geo9XYAhckfmfo8kbMRLeWU8KQd3XsJqFKmZLT', // Ethereum Sepolia
 };
