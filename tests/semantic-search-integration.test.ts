@@ -1,54 +1,72 @@
 /**
- * Integration tests for SemanticSearchClient against live endpoint.
+ * Integration tests for semantic search via SDK (sdk.searchAgents with keyword).
  * Run with: RUN_LIVE_TESTS=1 npm test -- semantic-search-integration
  * Or: SEMANTIC_SEARCH_LIVE=1 npm test -- semantic-search-integration
  */
 
-import { SemanticSearchClient } from '../src/core/semantic-search-client.js';
+import { SDK } from '../src/index.js';
+import { CHAIN_ID, RPC_URL, printConfig } from './config.js';
 
 const RUN_LIVE = process.env.RUN_LIVE_TESTS === '1' || process.env.SEMANTIC_SEARCH_LIVE === '1';
 const describeMaybe = RUN_LIVE ? describe : describe.skip;
 
-describeMaybe('SemanticSearchClient (live)', () => {
-  const baseUrl = process.env.SEMANTIC_SEARCH_URL || 'https://semantic-search.ag0.xyz';
-  let client: SemanticSearchClient;
+describeMaybe('Semantic search via SDK (live)', () => {
+  let sdk: SDK;
 
   beforeAll(() => {
-    client = new SemanticSearchClient(baseUrl);
+    printConfig();
+    sdk = new SDK({
+      chainId: CHAIN_ID,
+      rpcUrl: RPC_URL,
+    });
   });
 
-  it('returns results for a non-empty query', async () => {
-    const results = await client.search('crypto agent', { topK: 5 });
-    expect(Array.isArray(results)).toBe(true);
-    expect(results.length).toBeGreaterThan(0);
-    expect(results.length).toBeLessThanOrEqual(5);
+  it('returns results for a non-empty keyword query', async () => {
+    const result = await sdk.searchAgents(
+      { keyword: 'crypto agent' },
+      { pageSize: 5, semanticTopK: 10 }
+    );
+    expect(result.items).toBeDefined();
+    expect(Array.isArray(result.items)).toBe(true);
+    expect(result.items.length).toBeGreaterThan(0);
+    expect(result.items.length).toBeLessThanOrEqual(5);
   });
 
-  it('each result has chainId, agentId (chainId:tokenId), and score', async () => {
-    const results = await client.search('agent', { topK: 3 });
-    expect(results.length).toBeGreaterThan(0);
-    for (const r of results) {
-      expect(typeof r.chainId).toBe('number');
-      expect(Number.isFinite(r.chainId)).toBe(true);
-      expect(typeof r.agentId).toBe('string');
-      expect(r.agentId).toMatch(/^\d+:\d+$/);
-      expect(typeof r.score).toBe('number');
-      expect(r.score).toBeGreaterThanOrEqual(0);
-      expect(r.score).toBeLessThanOrEqual(1);
+  it('each item has chainId, agentId (chainId:tokenId), and optional semanticScore', async () => {
+    const result = await sdk.searchAgents(
+      { keyword: 'agent' },
+      { pageSize: 3, semanticTopK: 5 }
+    );
+    expect(result.items.length).toBeGreaterThan(0);
+    for (const item of result.items) {
+      expect(typeof item.chainId).toBe('number');
+      expect(typeof item.agentId).toBe('string');
+      expect(item.agentId).toMatch(/^\d+:\d+$/);
+      if ((item as { semanticScore?: number }).semanticScore != null) {
+        const score = (item as { semanticScore: number }).semanticScore;
+        expect(score).toBeGreaterThanOrEqual(0);
+        expect(score).toBeLessThanOrEqual(1);
+      }
     }
   });
 
-  it('respects topK limit', async () => {
-    const results = await client.search('agent', { topK: 2 });
-    expect(results.length).toBeLessThanOrEqual(2);
+  it('respects pageSize', async () => {
+    const result = await sdk.searchAgents(
+      { keyword: 'agent' },
+      { pageSize: 2, semanticTopK: 5 }
+    );
+    expect(result.items.length).toBeLessThanOrEqual(2);
   });
 
-  it('single query returns valid structure (avoids rate limit)', async () => {
-    const results = await client.search('assistant', { topK: 2 });
-    expect(Array.isArray(results)).toBe(true);
-    if (results.length > 0) {
-      expect(results[0].agentId).toMatch(/^\d+:\d+$/);
-      expect(typeof results[0].score).toBe('number');
+  it('returns valid structure (single query to avoid rate limit)', async () => {
+    const result = await sdk.searchAgents(
+      { keyword: 'assistant' },
+      { pageSize: 2, semanticTopK: 5 }
+    );
+    expect(Array.isArray(result.items)).toBe(true);
+    if (result.items.length > 0) {
+      expect(result.items[0].agentId).toMatch(/^\d+:\d+$/);
+      expect(typeof result.items[0].chainId).toBe('number');
     }
   });
 });
