@@ -12,9 +12,13 @@ This document specifies new APIs on the Agent0 SDK **Agent** type: A2A messaging
 
 **`agent.message(content [, options])`** — Unified entry point. Determines which message methods are available for this agent (A2A, XMTP), uses a fixed priority order (**A2A first, then XMTP**), and delegates to the corresponding method (e.g. `messageA2A`, then `messageXMTP`). Returns the same shape as the underlying call (e.g. `MessageResponse | TaskResponse` when A2A is used). The SDK exposes this and the protocol-specific methods (`messageA2A`, `messageXMTP`); callers may use either.
 
-**Options** — Passed through to the underlying method. When A2A is used: same as **`messageA2A`** (`blocking`, `contextId`, `taskId` — see §1.1). When XMTP is used: no options specified for now.
+**Options** — Passed through to the underlying method. When A2A is used: same as **`messageA2A`** (`blocking`, `contextId`, `taskId` — see §2.1). When XMTP is used: no options specified for now.
 
-### 1.1 A2A: messageA2A
+---
+
+## 2. A2A
+
+### 2.1 Send message (messageA2A)
 
 **`agent.messageA2A(content [, options])`**
 
@@ -27,14 +31,14 @@ Sends a message to the agent’s A2A endpoint. The server may reply with a direc
   - Object: A2A message shape with **`parts`** (array of Part). Example: `{ parts: [{ text: 'What is the weather today?' }] }`. Parts use `text`, `url`, `data`, or `raw` per [A2A Part](https://a2a-protocol.org/dev/specification/). The SDK may allow omitting `role` (defaults to user) and `messageId` (generated if absent). Follow-ups use **options.taskId** / **options.contextId** (see options).
 - **options** *(optional)* — e.g. `{ blocking?: boolean; contextId?: string; taskId?: string }`.  
   - `blocking: true` — wait until the task reaches a terminal state and return the final task state; otherwise return immediately.  
-  - `**contextId`** — associate this message with an existing conversation context (opaque string from a previous Task or Message). Omit to start a new context; server will generate and return a new `contextId`. Pass `contextId` without `taskId` to start a **new task** in that same context.  
-  - `**taskId`** — send a follow-up message to this existing task (continue or refine). Server infers `contextId` from the task if omitted. If you pass both `contextId` and `taskId`, they must match the task’s context or the server may reject.
+  - **`contextId`** — associate this message with an existing conversation context (opaque string from a previous Task or Message). Omit to start a new context; server will generate and return a new `contextId`. Pass `contextId` without `taskId` to start a **new task** in that same context.  
+  - **`taskId`** — send a follow-up message to this existing task (continue or refine). Server infers `contextId` from the task if omitted. If you pass both `contextId` and `taskId`, they must match the task’s context or the server may reject.
 
 **Returns**
 
 - **MessageResponse** — direct reply from the agent (no task). Typed object with message content (e.g. `content`, `parts`) and optional `contextId`. No `task` or `taskId`.
-- **TaskResponse** — server created a task. Typed object with `**taskId`** (opaque string), `**contextId`**, and `**task**` (the task handle, e.g. an `AgentTask`). Use `response.task` to work with the task; use `agent.task(taskId)` only when loading by ID (e.g. after restart). Discriminate from MessageResponse by shape: TaskResponse has `task` and `taskId`; MessageResponse does not (e.g. `'task' in response`).
-- If the server responds with **HTTP 402**, the result is a response object that includes `**x402Required`** (see §4). The SDK does not throw; the caller checks `response.x402Required` and may call `response.x402Payment.pay()` to pay and retry.
+- **TaskResponse** — server created a task. Typed object with **`taskId`** (opaque string), **`contextId`**, and **`task`** (the task handle, e.g. an `AgentTask`). Use `response.task` to work with the task; use `agent.task(taskId)` only when loading by ID (e.g. after restart). Discriminate from MessageResponse by shape: TaskResponse has `task` and `taskId`; MessageResponse does not (e.g. `'task' in response`).
+- If the server responds with **HTTP 402**, the result is a response object that includes **`x402Required`** (see §4). The SDK does not throw; the caller checks `response.x402Required` and may call `response.x402Payment.pay()` to pay and retry.
 
 **Errors**
 
@@ -45,11 +49,7 @@ Sends a message to the agent’s A2A endpoint. The server may reply with a direc
 
 - Under the hood this maps to A2A **Send Message** (e.g. `POST /message:send` in the HTTP binding).
 
----
-
-## 2. Tasks
-
-### 2.1 Getting a task handle
+### 2.2 Getting a task handle
 
 - `**response.task`** — When `messageA2A` returns a **TaskResponse**, `**response.task`** is the task handle (e.g. an **AgentTask** object). Use it directly. Discriminate by shape: e.g. `'task' in response` or `response.task !== undefined`.
 - `**agent.task(taskId)`** — Load an existing task by ID when you don’t have the response (e.g. after restart or when the ID was stored). `taskId` is an opaque string from the A2A server. Returns the same kind of task handle as `response.task`.
@@ -57,14 +57,14 @@ Sends a message to the agent’s A2A endpoint. The server may reply with a direc
 Example:
 
 ```ts
-const response = await agent.messageA2A({ type: 'task-proposal', goal: 'analyze ETH sentiment' });
+const response = await agent.messageA2A({ parts: [{ text: 'analyze ETH sentiment' }] });
 if ('task' in response) {
   const task = response.task;  // AgentTask — use task.query(), task.message(), task.cancel()
 }
 // Or, when you only have the ID: const task = agent.task(taskId);
 ```
 
-### 2.2 Listing tasks
+### 2.3 Listing tasks
 
 `**agent.listTasks([options])**`
 
@@ -81,7 +81,7 @@ Returns a list of tasks for this agent. Use when you don’t have a `taskId` yet
 - List of task summaries or full task objects (per options), plus optional `nextPageToken` for pagination.
 - May include `**x402Required`** if the list endpoint returns HTTP 402 (see §4).
 
-### 2.3 Task handle (AgentTask)
+### 2.4 Task handle (AgentTask)
 
 A task handle (e.g. **AgentTask**) is an object tied to a single task ID.
 
