@@ -21,12 +21,15 @@ Sends a message to the agent’s A2A endpoint. The server may reply with a direc
   - Object: structured payload. Supported shapes include:
     - `{ type: 'task-proposal', goal: string, ... }` — propose a task (e.g. `goal: 'analyze ETH sentiment'`).
     - A2A-aligned `SendMessageRequest`-like shape (message with `parts[]`, optional `taskId` for follow-ups, etc.) when the SDK supports it.
-- **options** *(optional)* — e.g. `{ blocking?: boolean }`. If `blocking: true`, the call waits until the task reaches a terminal state (completed, failed, canceled, rejected) and returns the final task state; otherwise returns immediately with the task or message.
+- **options** *(optional)* — e.g. `{ blocking?: boolean; contextId?: string; taskId?: string }`.  
+  - `blocking: true` — wait until the task reaches a terminal state and return the final task state; otherwise return immediately.  
+  - **`contextId`** — associate this message with an existing conversation context (opaque string from a previous Task or Message). Omit to start a new context; server will generate and return a new `contextId`. Pass `contextId` without `taskId` to start a **new task** in that same context.  
+  - **`taskId`** — send a follow-up message to this existing task (continue or refine). Server infers `contextId` from the task if omitted. If you pass both `contextId` and `taskId`, they must match the task’s context or the server may reject.
 
 **Returns**
 
 - **MessageResponse** — direct reply from the agent (no task). Contains at least `type: 'message'` and the message content (e.g. `content`, `parts`).
-- **TaskResponse** — server created a task. Contains `type: 'task'`, `taskId` (opaque string), and **`task`** — the task handle (e.g. an `AgentTask` object) for this task. Use `response.task` to work with the task; use `agent.task(taskId)` only when loading by ID (e.g. after restart).
+- **TaskResponse** — server created a task. Contains `type: 'task'`, `taskId` (opaque string), **`contextId`** (opaque string grouping this task with related tasks/messages), and **`task`** — the task handle (e.g. an `AgentTask` object). Use `response.task` to work with the task; use `agent.task(taskId)` only when loading by ID (e.g. after restart).
 - If the server responds with **HTTP 402**, the result is a response object that includes **`x402Required`** (see §4). The SDK does not throw; the caller checks `response.x402Required` and may call `response.x402Payment.pay()` to pay and retry.
 
 **Errors**
@@ -65,7 +68,7 @@ Returns a list of tasks for this agent. Use when you don’t have a `taskId` yet
 
 **Options** *(optional)*
 
-- **filter** — e.g. by status (`open`, `completed`, `failed`, `canceled`), by context, or other A2A list filters.
+- **filter** — e.g. by **`contextId`** (tasks in that conversation only), by status (`open`, `completed`, `failed`, `canceled`), or other A2A list filters.
 - **pagination** — e.g. `pageSize`, `pageToken` (from a previous `listTasks` response).
 - **historyLength** — max number of messages to include per task in the list response (0 to omit history).
 
@@ -76,12 +79,19 @@ Returns a list of tasks for this agent. Use when you don’t have a `taskId` yet
 
 ### 2.3 Task handle (AgentTask)
 
-A task handle (e.g. **AgentTask**) is an object tied to a single task ID. It exposes:
+A task handle (e.g. **AgentTask**) is an object tied to a single task ID.
+
+**Properties (read-only):**
+
+- **`task.taskId`** — The A2A task ID (opaque string). Use with `agent.task(task.taskId)` to load the same task later (e.g. after restart).
+- **`task.contextId`** — The A2A context ID for this task (opaque string). All tasks and messages with the same `contextId` belong to the same conversational session. Use it when starting a new task in the same context via `messageA2A(content, { contextId: task.contextId })` or when listing tasks in that context via `listTasks({ filter: { contextId: task.contextId } })`.
+
+**Methods:**
 
 | Method | Description | A2A mapping |
 |--------|-------------|-------------|
 | **`task.query([options])`** | Get current task state (status, artifacts, optional message history). Options may include `historyLength`. | Get Task `GET /tasks/{id}` |
-| **`task.message(content)`** | Send another message to this task (follow-up). Same `content` shapes as `messageA2A`. | Send Message with existing task context |
+| **`task.message(content)`** | Send another message to this task (follow-up). Same `content` shapes as `messageA2A`. The SDK sends this task’s `taskId` (and `contextId`) automatically; no need to pass contextId. | Send Message with existing task context |
 | **`task.cancel()`** | Cancel the task. Returns updated task state. | Cancel Task `POST /tasks/{id}:cancel` |
 | **`task.subscribe()`** | Subscribe to live updates (status changes, artifact updates). Returns an async iterable or event stream; server sends events until task reaches a terminal state. Optional: not all servers support streaming. | Subscribe to task `POST /tasks/{id}:subscribe` |
 
@@ -193,11 +203,11 @@ if (listResult.x402Required) {
 
 ## 5. Types (summary)
 
-- **MessageResponse** — `type: 'message'`; message content (e.g. `content` or `parts`).
-- **TaskResponse** — `type: 'task'`; `taskId: string`; **`task`** (the AgentTask handle for this task); optional task snapshot.
+- **MessageResponse** — `type: 'message'`; message content (e.g. `content` or `parts`). May include **`contextId`** when the server associates the message with a context (use it in the next `messageA2A` call to continue that context).
+- **TaskResponse** — `type: 'task'`; `taskId: string`; **`contextId`** (string, conversation context); **`task`** (the AgentTask handle); optional task snapshot.
 - **Response union** — `MessageResponse | TaskResponse` for `messageA2A`; discriminate with `response.type`. For task responses, use `response.task` to get the AgentTask.
 - **List tasks result** — list of tasks + optional `nextPageToken`. May include `x402Required` + `x402Payment`.
-- **AgentTask** (task handle) — object with `query()`, `message()`, `cancel()`, and optionally `subscribe()`. Same type returned by `response.task` and `agent.task(taskId)`. Each method may return a result that includes `x402Required` + `x402Payment`.
+- **AgentTask** (task handle) — has read-only **`taskId`** and **`contextId`** (strings); methods `query()`, `message()`, `cancel()`, and optionally `subscribe()`. Same type returned by `response.task` and `agent.task(taskId)`. Each method may return a result that includes `x402Required` + `x402Payment`.
 - **x402Payment** — at least `price`, `token`, `pay()`. Optionally `network`, `description`, `scheme`, `maxAmountRequired`, and other 402 body fields.
 - **Conversation handle** — `history()`, `message(content)`.
 
