@@ -10,7 +10,7 @@ This document specifies new APIs on the Agent0 SDK **Agent** type: A2A messaging
 
 ### 1.1 Send message
 
-**`agent.messageA2A(content [, options])`**
+`**agent.messageA2A(content [, options])`**
 
 Sends a message to the agent’s A2A endpoint. The server may reply with a direct message or create a task.
 
@@ -23,14 +23,14 @@ Sends a message to the agent’s A2A endpoint. The server may reply with a direc
     - A2A-aligned `SendMessageRequest`-like shape (message with `parts[]`, optional `taskId` for follow-ups, etc.) when the SDK supports it.
 - **options** *(optional)* — e.g. `{ blocking?: boolean; contextId?: string; taskId?: string }`.  
   - `blocking: true` — wait until the task reaches a terminal state and return the final task state; otherwise return immediately.  
-  - **`contextId`** — associate this message with an existing conversation context (opaque string from a previous Task or Message). Omit to start a new context; server will generate and return a new `contextId`. Pass `contextId` without `taskId` to start a **new task** in that same context.  
-  - **`taskId`** — send a follow-up message to this existing task (continue or refine). Server infers `contextId` from the task if omitted. If you pass both `contextId` and `taskId`, they must match the task’s context or the server may reject.
+  - `**contextId`** — associate this message with an existing conversation context (opaque string from a previous Task or Message). Omit to start a new context; server will generate and return a new `contextId`. Pass `contextId` without `taskId` to start a **new task** in that same context.  
+  - `**taskId`** — send a follow-up message to this existing task (continue or refine). Server infers `contextId` from the task if omitted. If you pass both `contextId` and `taskId`, they must match the task’s context or the server may reject.
 
 **Returns**
 
 - **MessageResponse** — direct reply from the agent (no task). Contains at least `type: 'message'` and the message content (e.g. `content`, `parts`).
-- **TaskResponse** — server created a task. Contains `type: 'task'`, `taskId` (opaque string), **`contextId`** (opaque string grouping this task with related tasks/messages), and **`task`** — the task handle (e.g. an `AgentTask` object). Use `response.task` to work with the task; use `agent.task(taskId)` only when loading by ID (e.g. after restart).
-- If the server responds with **HTTP 402**, the result is a response object that includes **`x402Required`** (see §4). The SDK does not throw; the caller checks `response.x402Required` and may call `response.x402Payment.pay()` to pay and retry.
+- **TaskResponse** — server created a task. Contains `type: 'task'`, `taskId` (opaque string), `**contextId`** (opaque string grouping this task with related tasks/messages), and `**task**` — the task handle (e.g. an `AgentTask` object). Use `response.task` to work with the task; use `agent.task(taskId)` only when loading by ID (e.g. after restart).
+- If the server responds with **HTTP 402**, the result is a response object that includes `**x402Required`** (see §4). The SDK does not throw; the caller checks `response.x402Required` and may call `response.x402Payment.pay()` to pay and retry.
 
 **Errors**
 
@@ -47,8 +47,8 @@ Sends a message to the agent’s A2A endpoint. The server may reply with a direc
 
 ### 2.1 Getting a task handle
 
-- **`response.task`** — When `messageA2A` returns a **TaskResponse** (`response.type === 'task'`), **`response.task`** is the task handle (e.g. an **AgentTask** object) for that task. Use it directly.
-- **`agent.task(taskId)`** — Load an existing task by ID when you don’t have the response (e.g. after restart or when the ID was stored). `taskId` is an opaque string from the A2A server. Returns the same kind of task handle as `response.task`.
+- `**response.task`** — When `messageA2A` returns a **TaskResponse** (`response.type === 'task'`), `**response.task`** is the task handle (e.g. an **AgentTask** object) for that task. Use it directly.
+- `**agent.task(taskId)`** — Load an existing task by ID when you don’t have the response (e.g. after restart or when the ID was stored). `taskId` is an opaque string from the A2A server. Returns the same kind of task handle as `response.task`.
 
 Example:
 
@@ -62,20 +62,20 @@ if (response.type === 'task') {
 
 ### 2.2 Listing tasks
 
-**`agent.listTasks([options])`**
+`**agent.listTasks([options])**`
 
 Returns a list of tasks for this agent. Use when you don’t have a `taskId` yet (e.g. “my open tasks”).
 
 **Options** *(optional)*
 
-- **filter** — e.g. by **`contextId`** (tasks in that conversation only), by status (`open`, `completed`, `failed`, `canceled`), or other A2A list filters.
+- **filter** — e.g. by `**contextId`** (tasks in that conversation only), by status (`open`, `completed`, `failed`, `canceled`), or other A2A list filters.
 - **pagination** — e.g. `pageSize`, `pageToken` (from a previous `listTasks` response).
 - **historyLength** — max number of messages to include per task in the list response (0 to omit history).
 
 **Returns**
 
 - List of task summaries or full task objects (per options), plus optional `nextPageToken` for pagination.
-- May include **`x402Required`** if the list endpoint returns HTTP 402 (see §4).
+- May include `**x402Required`** if the list endpoint returns HTTP 402 (see §4).
 
 ### 2.3 Task handle (AgentTask)
 
@@ -83,19 +83,21 @@ A task handle (e.g. **AgentTask**) is an object tied to a single task ID.
 
 **Properties (read-only):**
 
-- **`task.taskId`** — The A2A task ID (opaque string). Use with `agent.task(task.taskId)` to load the same task later (e.g. after restart).
-- **`task.contextId`** — The A2A context ID for this task (opaque string). All tasks and messages with the same `contextId` belong to the same conversational session. Use it when starting a new task in the same context via `messageA2A(content, { contextId: task.contextId })` or when listing tasks in that context via `listTasks({ filter: { contextId: task.contextId } })`.
+- `**task.taskId`** — The A2A task ID (opaque string). Use with `agent.task(task.taskId)` to load the same task later (e.g. after restart).
+- `**task.contextId**` — The A2A context ID for this task (opaque string). All tasks and messages with the same `contextId` belong to the same conversational session. Use it when starting a new task in the same context via `messageA2A(content, { contextId: task.contextId })` or when listing tasks in that context via `listTasks({ filter: { contextId: task.contextId } })`.
 
 **Methods:**
 
-| Method | Description | A2A mapping |
-|--------|-------------|-------------|
-| **`task.query([options])`** | Get current task state (status, artifacts, optional message history). Options may include `historyLength`. | Get Task `GET /tasks/{id}` |
-| **`task.message(content)`** | Send another message to this task (follow-up). Same `content` shapes as `messageA2A`. The SDK sends this task’s `taskId` (and `contextId`) automatically; no need to pass contextId. | Send Message with existing task context |
-| **`task.cancel()`** | Cancel the task. Returns updated task state. | Cancel Task `POST /tasks/{id}:cancel` |
-| **`task.subscribe()`** | Subscribe to live updates (status changes, artifact updates). Returns an async iterable or event stream; server sends events until task reaches a terminal state. Optional: not all servers support streaming. | Subscribe to task `POST /tasks/{id}:subscribe` |
 
-**x402:** Any of these methods may return a result that includes **`x402Required`** (e.g. the server requires payment for that operation). Same handling as §4: caller checks `x402Required` and may call `x402Payment.pay()` to retry.
+| Method                      | Description                                                                                                                                                                                                    | A2A mapping                                    |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| `**task.query([options])`** | Get current task state (status, artifacts, optional message history). Options may include `historyLength`.                                                                                                     | Get Task `GET /tasks/{id}`                     |
+| `**task.message(content)**` | Send another message to this task (follow-up). Same `content` shapes as `messageA2A`. The SDK sends this task’s `taskId` (and `contextId`) automatically; no need to pass contextId.                           | Send Message with existing task context        |
+| `**task.cancel()**`         | Cancel the task. Returns updated task state.                                                                                                                                                                   | Cancel Task `POST /tasks/{id}:cancel`          |
+| `**task.subscribe()**`      | Subscribe to live updates (status changes, artifact updates). Returns an async iterable or event stream; server sends events until task reaches a terminal state. Optional: not all servers support streaming. | Subscribe to task `POST /tasks/{id}:subscribe` |
+
+
+**x402:** Any of these methods may return a result that includes `**x402Required`** (e.g. the server requires payment for that operation). Same handling as §4: caller checks `x402Required` and may call `x402Payment.pay()` to retry.
 
 **Task status / lifecycle**
 
@@ -109,20 +111,26 @@ A task handle (e.g. **AgentTask**) is an object tied to a single task ID.
 ### 3.1 Assumptions
 
 - A wallet is connected to the SDK (signer available).
-- The agent has a wallet (e.g. via `agent.getWallet()`); that wallet is used for XMTP identity.
-- We use **topics** to separate task-related or context-specific conversations; **DMs** remain available for 1:1 chat. Alternatives (no wallet, different auth) may be specified later.
+- The agent may have a wallet (e.g. via `agent.getWallet()`). In XMTP there is **one DM per pair** of participants—so two addresses have a single 1:1 conversation. To have multiple distinct threads with the same party (e.g. one per task), you create **groups**; each group is a separate conversation. The SDK exposes both **DMs** (1:1, one per pair) and **groups** (multi-party or task-specific threads). Alternatives (no wallet, different auth) may be specified later.
 
-### 3.2 Conversation list and creation
+### 3.2 SDK: conversations for the connected wallet
 
-- **`agent.xmtpConversations()`** — Returns the list of current conversations (topics and/or DMs the agent participates in). Return type: array of conversation handles or summary objects (e.g. id, topic, participants, last activity).
-- **`agent.xmtpConversations.new([options])`** — Create a new XMTP conversation. Options may specify topic vs DM, participants (e.g. peer address for DM), or other XMTP creation params. Returns a **conversation handle**.
+- **`sdk.xmtpConversations()`** — List conversations for the **connected wallet** (the wallet/signer connected to the SDK). Optional filter: `{ type?: 'dm' | 'group' }` to list only DMs or only groups. Returns array of conversation handles or summary objects (e.g. id, participants, last activity).
+- **`sdk.xmtpConversations.newDm(peerAddress)`** — Create or get the **DM** with that peer (EOA or address). There is only one DM per pair; repeated calls with the same peer return the same conversation. Returns a **conversation handle**.
+- **`sdk.xmtpConversations.newGroup([options])`** — Create a new **group** as the connected wallet. Options: participants (addresses or inbox IDs), optional name/description. Use groups when you need multiple distinct threads (e.g. one group per task). Returns a **conversation handle**.
 
-### 3.3 Conversation handle
+### 3.3 Agent: conversations for the agent’s wallet
 
-For a conversation object **`convo`**:
+- **`agent.xmtpConversations()`** — List conversations for the **agent’s wallet** (e.g. from `agent.getWallet()`). Same optional filter `{ type?: 'dm' | 'group' }`. Requires the agent to have a wallet set.
+- **`agent.xmtpConversations.newDm(peerAddress)`** — Create or get the **DM** between the agent and that peer. One DM per pair. Returns a **conversation handle**.
+- **`agent.xmtpConversations.newGroup([options])`** — Create a new **group** as the agent. Same options as SDK. Use for task-specific or multi-party threads. Returns a **conversation handle**.
 
-- **`convo.history([options])`** — Past messages in this conversation. Options may include pagination (e.g. `limit`, `before` cursor). Returns an array of messages (and optionally a cursor for more).
-- **`convo.message(content)`** — Send a message. `content` is string or a structured message payload (e.g. with parts or attachments if the SDK supports it).
+### 3.4 Conversation handle
+
+For a conversation object `**convo`**:
+
+- `**convo.history([options])**` — Past messages in this conversation. Options may include pagination (e.g. `limit`, `before` cursor). Returns an array of messages (and optionally a cursor for more).
+- `**convo.message(content)**` — Send a message. `content` is string or a structured message payload (e.g. with parts or attachments if the SDK supports it).
 
 **Errors**
 
@@ -130,7 +138,7 @@ For a conversation object **`convo`**:
 
 **XMTP mapping**
 
-- Conversations and messages align with [XMTP conversations and messaging](https://docs.xmtp.org/chat-apps/core-messaging/create-conversations); topics are used where appropriate to separate task-related flows.
+- Conversations and messages align with [XMTP conversations and messaging](https://docs.xmtp.org/chat-apps/core-messaging/create-conversations) (DMs and groups).
 
 ---
 
@@ -143,27 +151,27 @@ For a conversation object **`convo`**:
 - **A2A:** `messageA2A`, `listTasks`, and every task-handle method (`query`, `message`, `cancel`, `subscribe` if it does HTTP).
 - **Future:** MCP tool/resource calls, or other HTTP-based agent operations.
 
-So “regular requests” that can respond with 402 are all treated uniformly: the SDK does not throw on 402; it returns a response object that may include **`x402Required`**.
+So “regular requests” that can respond with 402 are all treated uniformly: the SDK does not throw on 402; it returns a response object that may include `**x402Required`**.
 
 ### 4.2 Response shape when 402 is returned
 
 When the server responds with **HTTP 402**:
 
 - The SDK returns a normal result object (no throw).
-- That object includes **`x402Required: true`** and an **`x402Payment`** object.
+- That object includes `**x402Required: true`** and an `**x402Payment**` object.
 
-**`x402Payment`** (payment-required payload) must include at least:
+`**x402Payment**` (payment-required payload) must include at least:
 
-- **`price`** — amount required (e.g. in atomic units, or human-readable; exact format TBD per x402 body).
-- **`token`** — token address or symbol (e.g. USDC).
-- **`pay()`** — method that performs the payment (e.g. build payment payload, sign, send `PAYMENT-SIGNATURE` header, retry the **same** request). Returns a **Promise** that resolves to the same shape as the **original** call would on success (e.g. `MessageResponse` or `TaskResponse` for `messageA2A`, task state for `task.query()`, etc.).
+- `**price**` — amount required (e.g. in atomic units, or human-readable; exact format TBD per x402 body).
+- `**token**` — token address or symbol (e.g. USDC).
+- `**pay()**` — method that performs the payment (e.g. build payment payload, sign, send `PAYMENT-SIGNATURE` header, retry the **same** request). Returns a **Promise** that resolves to the same shape as the **original** call would on success (e.g. `MessageResponse` or `TaskResponse` for `messageA2A`, task state for `task.query()`, etc.).
 
 **Additional fields** (so an agent can decide whether to pay):
 
-- **`network`** — e.g. chain or network id.
-- **`description`** — human- or agent-readable reason for payment.
-- **`scheme`** — payment scheme (e.g. from x402 `accepts[].scheme`).
-- **`maxAmountRequired`** — if different from `price` (x402 body may use this).
+- `**network`** — e.g. chain or network id.
+- `**description**` — human- or agent-readable reason for payment.
+- `**scheme**` — payment scheme (e.g. from x402 `accepts[].scheme`).
+- `**maxAmountRequired**` — if different from `price` (x402 body may use this).
 - Other fields from the 402 response body (see [x402 HTTP 402](https://x402.gitbook.io/x402/core-concepts/http-402)) as needed.
 
 ### 4.3 Usage pattern
@@ -195,20 +203,20 @@ if (listResult.x402Required) {
 
 ### 4.4 Pay() behavior and errors
 
-- **`pay()`** — Resolves when the payment has been sent and the **retried** request succeeds. Return value = result of the retried request (no `x402Required` on success).
-- If payment or retry fails (e.g. insufficient funds, server still 402, network error), **`pay()`** rejects with an error. The SDK does not retry indefinitely.
+- `**pay()**` — Resolves when the payment has been sent and the **retried** request succeeds. Return value = result of the retried request (no `x402Required` on success).
+- If payment or retry fails (e.g. insufficient funds, server still 402, network error), `**pay()`** rejects with an error. The SDK does not retry indefinitely.
 - Optional: SDK may allow passing a custom signer or payment params into `pay(options)` for advanced flows; that can be specified later.
 
 ---
 
 ## 5. Types (summary)
 
-- **MessageResponse** — `type: 'message'`; message content (e.g. `content` or `parts`). May include **`contextId`** when the server associates the message with a context (use it in the next `messageA2A` call to continue that context).
-- **TaskResponse** — `type: 'task'`; `taskId: string`; **`contextId`** (string, conversation context); **`task`** (the AgentTask handle); optional task snapshot.
+- **MessageResponse** — `type: 'message'`; message content (e.g. `content` or `parts`). May include `**contextId`** when the server associates the message with a context (use it in the next `messageA2A` call to continue that context).
+- **TaskResponse** — `type: 'task'`; `taskId: string`; `**contextId`** (string, conversation context); `**task**` (the AgentTask handle); optional task snapshot.
 - **Response union** — `MessageResponse | TaskResponse` for `messageA2A`; discriminate with `response.type`. For task responses, use `response.task` to get the AgentTask.
 - **List tasks result** — list of tasks + optional `nextPageToken`. May include `x402Required` + `x402Payment`.
-- **AgentTask** (task handle) — has read-only **`taskId`** and **`contextId`** (strings); methods `query()`, `message()`, `cancel()`, and optionally `subscribe()`. Same type returned by `response.task` and `agent.task(taskId)`. Each method may return a result that includes `x402Required` + `x402Payment`.
+- **AgentTask** (task handle) — has read-only `**taskId`** and `**contextId**` (strings); methods `query()`, `message()`, `cancel()`, and optionally `subscribe()`. Same type returned by `response.task` and `agent.task(taskId)`. Each method may return a result that includes `x402Required` + `x402Payment`.
 - **x402Payment** — at least `price`, `token`, `pay()`. Optionally `network`, `description`, `scheme`, `maxAmountRequired`, and other 402 body fields.
-- **Conversation handle** — `history()`, `message(content)`.
+- **Conversation handle** — `history()`, `message(content)`. Obtained from listing (`sdk.xmtpConversations()` / `agent.xmtpConversations()`) or from `newDm(peerAddress)` (1:1, one per pair) or `newGroup([options])` (groups for multi-party or task-specific threads).
 
 All “payable” methods: their return type is effectively `NormalResult | { x402Required: true; x402Payment: X402Payment }`, where `NormalResult` is the success type for that method.
