@@ -179,21 +179,14 @@ Callers can use this for arbitrary HTTP endpoints that may return 402; A2A and M
 When the server responds with **HTTP 402**:
 
 - The SDK returns a normal result object (no throw).
-- That object includes `**x402Required: true`** and an `**x402Payment**` object.
+- That object includes **`x402Required: true`** and an **`x402Payment`** object.
 
-`**x402Payment**` (payment-required payload) must include at least:
+**`x402Payment`** (payment-required payload) must include at least:
 
-- `**price**` — amount required (e.g. in atomic units, or human-readable; exact format TBD per x402 body).
-- `**token**` — token address or symbol (e.g. USDC).
-- `**pay()**` — method that performs the payment (e.g. build payment payload, sign, send `PAYMENT-SIGNATURE` header, retry the **same** request). Returns a **Promise** that resolves to the same shape as the **original** call would on success (e.g. `MessageResponse` or `TaskResponse` for `messageA2A`, task state for `task.query()`, etc.).
+- **`accepts`** — array of accepted payment options (from the x402 402 body). When the endpoint accepts multiple chains, tokens, or schemes, the server returns multiple entries. Each entry has at least **price** (amount), **token** (address or symbol), and optionally **network** (chain id), **scheme**, **description**, **maxAmountRequired**, etc. The agent can choose which option to pay with (e.g. by preferred chain or token) and pass that choice into **`pay()`**.
+- **`pay(accept?)`** — method that performs the payment and retries the request. If the server returned a single option, **`pay()`** with no argument uses it. If the server returned multiple **`accepts`**, the caller can pass the chosen option (e.g. **`pay(x402Payment.accepts[0])`** or **`pay(acceptIndex)`**) so the SDK pays with that chain/token/scheme. Returns a **Promise** that resolves to the same shape as the **original** call would on success (e.g. `MessageResponse` or `TaskResponse` for `messageA2A`, task state for `task.query()`, etc.).
 
-**Additional fields** (so an agent can decide whether to pay):
-
-- `**network`** — e.g. chain or network id.
-- `**description**` — human- or agent-readable reason for payment.
-- `**scheme**` — payment scheme (e.g. from x402 `accepts[].scheme`).
-- `**maxAmountRequired**` — if different from `price` (x402 body may use this).
-- Other fields from the 402 response body (see [x402 HTTP 402](https://x402.gitbook.io/x402/core-concepts/http-402)) as needed.
+**Convenience:** When there is only one accept, the SDK may also expose **`price`**, **`token`**, **`network`** at the top level of **`x402Payment`** for backward compatibility or simpler inspection. The **`accepts`** array is always present so multi-option and single-option flows use the same shape.
 
 ### 4.4 Usage pattern
 
@@ -202,9 +195,10 @@ When the server responds with **HTTP 402**:
 ```ts
 const response = await agent.messageA2A(content);
 if (response.x402Required) {
-  // Agent can check response.x402Payment.price, .token, .network, .description
-  if (shouldPay(response.x402Payment)) {
-    const finalResponse = await response.x402Payment.pay();
+  // Agent can check response.x402Payment.accepts (each has price, token, network, etc.)
+  const chosen = response.x402Payment.accepts.find(a => a.network === preferredChain);
+  if (chosen && shouldPay(chosen)) {
+    const finalResponse = await response.x402Payment.pay(chosen);
     // finalResponse has the same shape as a successful messageA2A (MessageResponse | TaskResponse)
   }
 } else {
@@ -226,9 +220,9 @@ if (a2aResult.x402Required) {
 
 ### 4.5 Pay() behavior and errors
 
-- `**pay()**` — Resolves when the payment has been sent and the **retried** request succeeds. Return value = result of the retried request (no `x402Required` on success).
-- If payment or retry fails (e.g. insufficient funds, server still 402, network error), `**pay()`** rejects with an error. The SDK does not retry indefinitely.
-- Optional: SDK may allow passing a custom signer or payment params into `pay(options)` for advanced flows; that can be specified later.
+- **`pay(accept?)`** — When the server returned multiple **`accepts`**, pass the chosen option (e.g. by chain or token). When there is a single option, **`pay()`** with no argument uses it. Resolves when the payment has been sent and the **retried** request succeeds. Return value = result of the retried request (no `x402Required` on success).
+- If payment or retry fails (e.g. insufficient funds, server still 402, network error), **`pay()`** rejects with an error. The SDK does not retry indefinitely.
+- Optional: SDK may allow passing a custom signer or payment params into **`pay(accept, options)`** for advanced flows; that can be specified later.
 
 ---
 
@@ -239,7 +233,7 @@ if (a2aResult.x402Required) {
 - **Response union** — `MessageResponse | TaskResponse` for `messageA2A`; discriminate with `response.type`. For task responses, use `response.task` to get the AgentTask.
 - **List tasks result** — list of tasks + optional `nextPageToken`. May include `x402Required` + `x402Payment`.
 - **AgentTask** (task handle) — has read-only `**taskId`** and `**contextId**` (strings); methods `query()`, `message()`, `cancel()`, and optionally `subscribe()`. Same type returned by `response.task` and `agent.task(taskId)`. Each method may return a result that includes `x402Required` + `x402Payment`.
-- **x402Payment** — at least `price`, `token`, `pay()`. Optionally `network`, `description`, `scheme`, `maxAmountRequired`, and other 402 body fields.
+- **x402Payment** — **`accepts`** (array of payment options; each has at least `price`, `token`, and optionally `network`, `scheme`, `description`, `maxAmountRequired`). When the endpoint accepts multiple chains/tokens/schemes, **`accepts`** has multiple entries. **`pay(accept?)`** — pass the chosen option when there are multiple, or call **`pay()`** when there is one. Top-level **`price`** / **`token`** / **`network`** may be present for single-option convenience.
 - **Conversation handle** — `history()`, `message(content)`. Obtained from listing (`sdk.xmtpConversations()` / `agent.xmtpConversations()`) or from `newDm(peerAddress)` (1:1, one per pair) or `newGroup([options])` (groups for multi-party or task-specific threads).
 
 All “payable” methods: their return type is effectively `NormalResult | { x402Required: true; x402Payment: X402Payment }`, where `NormalResult` is the success type for that method. They use **`sdk.request(options)`** (generic HTTP x402 handler) internally; that method is also exposed for custom or arbitrary HTTP calls that may return 402.
