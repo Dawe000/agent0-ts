@@ -17,10 +17,8 @@ Sends a message to the agent’s A2A endpoint. The server may reply with a direc
 **Parameters**
 
 - **content** — `string` or `object`.
-  - String: treated as a single text part.
-  - Object: structured payload. Supported shapes include:
-    - `{ type: 'task-proposal', goal: string, ... }` — propose a task (e.g. `goal: 'analyze ETH sentiment'`).
-    - A2A-aligned `SendMessageRequest`-like shape (message with `parts[]`, optional `taskId` for follow-ups, etc.) when the SDK supports it.
+  - String: treated as a single text part (SDK builds the A2A message).
+  - Object: A2A message shape with **`parts`** (array of Part). Example: `{ parts: [{ text: 'What is the weather today?' }] }`. Parts use `text`, `url`, `data`, or `raw` per [A2A Part](https://a2a-protocol.org/dev/specification/). The SDK may allow omitting `role` (defaults to user) and `messageId` (generated if absent). Follow-ups use **options.taskId** / **options.contextId** (see options).
 - **options** *(optional)* — e.g. `{ blocking?: boolean; contextId?: string; taskId?: string }`.  
   - `blocking: true` — wait until the task reaches a terminal state and return the final task state; otherwise return immediately.  
   - `**contextId`** — associate this message with an existing conversation context (opaque string from a previous Task or Message). Omit to start a new context; server will generate and return a new `contextId`. Pass `contextId` without `taskId` to start a **new task** in that same context.  
@@ -94,8 +92,8 @@ A task handle (e.g. **AgentTask**) is an object tied to a single task ID.
 | `**task.query([options])`**                                                                                                                                                                                                             | Get current task state (status, artifacts, optional message history). Options may include `historyLength`.                                                                           | Get Task `GET /tasks/{id}`              |
 | `**task.message(content)`**                                                                                                                                                                                                             | Send another message to this task (follow-up). Same `content` shapes as `messageA2A`. The SDK sends this task’s `taskId` (and `contextId`) automatically; no need to pass contextId. | Send Message with existing task context |
 | `**task.cancel()`**                                                                                                                                                                                                                     | Cancel the task. Returns updated task state.                                                                                                                                         | Cancel Task `POST /tasks/{id}:cancel`   |
-| **x402:** Any of these methods may return a result that includes `**x402Required`** (e.g. the server requires payment for that operation). Same handling as §4: caller checks `x402Required` and may call `x402Payment.pay()` to retry. |                                                                                                                                                                                      |                                         |
 
+**x402:** Any of these methods may return a result that includes **`x402Required`** (e.g. the server requires payment for that operation). Same handling as §4: caller checks `x402Required` and may call `x402Payment.pay()` to retry.
 
 **Task status / lifecycle**
 
