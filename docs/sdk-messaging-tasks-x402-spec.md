@@ -12,7 +12,7 @@ This document specifies new APIs on the Agent0 SDK **Agent** type: A2A messaging
 
 **`agent.message(content [, options])`** — Unified entry point. Determines which message methods are available for this agent (A2A, XMTP), uses a fixed priority order (**A2A first, then XMTP**), and delegates to the corresponding method (e.g. `messageA2A`, then `messageXMTP`). Returns the same shape as the underlying call (e.g. `MessageResponse | TaskResponse` when A2A is used). The SDK exposes this and the protocol-specific methods (`messageA2A`, `messageXMTP`); callers may use either.
 
-**Options** — Passed through to the underlying method. When A2A is used: same as **`messageA2A`** (`blocking`, `contextId`, `taskId`, optional **`apiKey`** — see §2.1 and §2.5). When XMTP is used: no options specified for now.
+**Options** — Passed through to the underlying method. When A2A is used: same as **`messageA2A`** (`blocking`, `contextId`, `taskId`, optional **`credential`** — see §2.1 and §2.5). When XMTP is used: no options specified for now.
 
 ---
 
@@ -29,11 +29,11 @@ Sends a message to the agent’s A2A endpoint. The server may reply with a direc
 - **content** — `string` or `object`.
   - String: treated as a single text part (SDK builds the A2A message).
   - Object: A2A message shape with **`parts`** (array of Part). Example: `{ parts: [{ text: 'What is the weather today?' }] }`. Parts use `text`, `url`, `data`, or `raw` per [A2A Part](https://a2a-protocol.org/dev/specification/). The SDK may allow omitting `role` (defaults to user) and `messageId` (generated if absent). Follow-ups use **options.taskId** / **options.contextId** (see options).
-- **options** *(optional)* — e.g. `{ blocking?: boolean; contextId?: string; taskId?: string; apiKey?: string }`.  
+- **options** *(optional)* — e.g. `{ blocking?: boolean; contextId?: string; taskId?: string; credential?: string | Credential }`.  
   - `blocking: true` — wait until the task reaches a terminal state and return the final task state; otherwise return immediately.  
   - **`contextId`** — associate this message with an existing conversation context (opaque string from a previous Task or Message). Omit to start a new context; server will generate and return a new `contextId`. Pass `contextId` without `taskId` to start a **new task** in that same context.  
   - **`taskId`** — send a follow-up message to this existing task (continue or refine). Server infers `contextId` from the task if omitted. If you pass both `contextId` and `taskId`, they must match the task’s context or the server may reject.  
-  - **`apiKey`** *(optional)* — when the agent’s endpoint requires auth, pass an API key; the SDK applies it per the agent’s AgentCard **securitySchemes** (see §2.5). Supported: **apiKey** and **http** (e.g. Bearer).
+  - **`credential`** *(optional)* — when the agent’s endpoint requires auth, pass a credential: **string** (treated as `{ apiKey: string }`) or **object** (e.g. `{ apiKey: "..." }` or other keys for JWTs). The agent’s AgentCard **securitySchemes** (see §2.5) determine where and under what name the value is sent (header, query, cookie).
 
 **Returns**
 
@@ -75,7 +75,7 @@ Returns a list of tasks for this agent. Use when you don’t have a `taskId` yet
 
 - **filter** — e.g. by **`contextId`** (tasks in that conversation only), by status (`open`, `completed`, `failed`, `canceled`), or other A2A list filters.
 - **historyLength** — max number of messages to include per task in the list response (0 to omit history).
-- **`apiKey`** *(optional)* — when the agent’s endpoint requires auth, same as **messageA2A** (see §2.5).
+- **`credential`** *(optional)* — when the agent’s endpoint requires auth, same as **messageA2A** (string or credential object; see §2.5).
 
 **Returns**
 
@@ -105,7 +105,7 @@ A task handle (e.g. **AgentTask**) is an object tied to a single task ID.
 
 **x402:** Any of these methods may return a result that includes **`x402Required`** (e.g. the server requires payment for that operation). Same handling as §4: caller checks `x402Required` and may call `x402Payment.pay()` to retry.
 
-**Auth:** **`task.query()`**, **`task.message()`**, and **`task.cancel()`** use the same auth as the agent’s A2A calls (see §2.5); no separate **apiKey** option on task methods.
+**Auth:** **`task.query()`**, **`task.message()`**, and **`task.cancel()`** use the same auth as the agent’s A2A calls (see §2.5); no separate **credential** option on task methods.
 
 **Task status / lifecycle**
 
@@ -114,7 +114,7 @@ A task handle (e.g. **AgentTask**) is an object tied to a single task ID.
 
 ### 2.5 A2A auth (optional)
 
-When an agent’s A2A endpoint requires authentication, the **AgentCard** (e.g. from the A2A endpoint or discovery) may declare **securitySchemes** (OpenAPI 3 style). The SDK can then send credentials in the right place (header, query, or cookie and name) when the caller provides **options.apiKey** on **messageA2A** or **listTasks**.
+When an agent’s A2A endpoint requires authentication, the **AgentCard** (e.g. from the A2A endpoint or discovery) may declare **securitySchemes** (OpenAPI 3 style). The caller provides **options.credential** on **messageA2A** or **listTasks**: either a **string** (treated as `{ apiKey: string }`) or a **credential object** (e.g. `{ apiKey: "..." }` or other keys for JWTs). The SDK uses the agent’s **securitySchemes** to send the credential in the right place (header, query, or cookie and name).
 
 **AgentCard shape** — **securitySchemes** object with named schemes (e.g. `apiKey`). Each scheme has **`type`** (`apiKey` or `http` for now); for **apiKey** it also has **`in`** (e.g. `header`, `query`, `cookie`) and **`name`** (e.g. `X-API-Key`). A **`security`** array references which schemes are required (e.g. `[{ "apiKey": [] }]`).
 
@@ -133,7 +133,7 @@ Example:
 }
 ```
 
-When **apiKey** is provided in options, the SDK uses the agent’s **securitySchemes** to place it (for **apiKey** type: **`in`** + **`name`**; for **http** e.g. Bearer: **Authorization** header). Supported scheme types for now: **apiKey** and **http**. If the AgentCard has no supported scheme, behavior is implementation-defined.
+When **credential** is provided in options (string or credential object), the SDK normalizes to a credential (e.g. string → `{ apiKey: string }`) and uses the agent’s **securitySchemes** to place it in the request (for **apiKey** type: **`in`** + **`name`**; for **http** e.g. Bearer: **Authorization** header). The scheme also determines which key from the credential object is used (e.g. `apiKey`). Supported scheme types for now: **apiKey** and **http**. If the AgentCard has no supported scheme, behavior is implementation-defined.
 
 ---
 
@@ -262,9 +262,9 @@ Response objects are typed so the SDK and callers work with **MessageResponse** 
 - **TaskResponse** — Interface: **`taskId: string`**; **`contextId: string`**; **`task: AgentTask`**; optional task snapshot. Has `task` and `taskId`; use these to narrow from the union.
 - **Response union** — `messageA2A` returns **`MessageResponse | TaskResponse`**. Narrow by shape: e.g. `if ('task' in response)` then `response` is TaskResponse and use `response.task` to get the AgentTask.
 - **List tasks result** — array of all tasks (SDK fetches all pages internally). May include `x402Required` + `x402Payment`.
-- **A2A options** — **messageA2A** and **listTasks** options may include optional **`apiKey?: string`** when the agent requires auth (see §2.5); SDK applies it per AgentCard **securitySchemes** (**apiKey** and **http** types).
+- **A2A options** — **messageA2A** and **listTasks** options may include optional **`credential`** (string or credential object) when the agent requires auth (see §2.5); SDK applies it per AgentCard **securitySchemes** (**apiKey** and **http** types).
 - **AgentTask** (task handle) — has read-only **`taskId`** and **`contextId`** (strings); methods `query()`, `message()`, `cancel()`. Returned by `response.task` and by `agent.loadTask(taskId)`. Each method may return a result that includes `x402Required` + `x402Payment`.
 - **x402Payment** — **`accepts`** (array of payment options; each has at least `price`, `token`, and optionally `network`, `scheme`, `description`, `maxAmountRequired`). When the endpoint accepts multiple chains/tokens/schemes, **`accepts`** has multiple entries. **`pay(accept?)`** — pass the chosen option when there are multiple, or call **`pay()`** when there is one. Top-level **`price`** / **`token`** / **`network`** may be present for single-option convenience.
 - **Conversation handle** — `history([options])`, `message(content)`. From **`sdk.loadXMTPConversation(peerAddress)`** or **`agent.loadXMTPConversation()`** (conversation with that agent). Send via **`sdk.messageXMTP(peerAddress, content)`** or **`agent.messageXMTP(content)`** to message an agent. Use **`agent.message(content)`** for a unified entry point (A2A first, then XMTP). List via **`sdk.XMTPConversations()`**.
 
-All “payable” methods: their return type is effectively `NormalResult | { x402Required: true; x402Payment: X402Payment }`, where `NormalResult` is the success type for that method. They use **`sdk.request(options)`** (generic HTTP x402 handler) internally; that method is also exposed for custom or arbitrary HTTP calls that may return 402.
+All “payable” methods: their return type is effectively `NormalResult | { x402Required: true; x402Payment: X402Payment }`, where `NormalResult` is the success type for that method. They use **`sdk.request(options)`** (generic HTTP x402 handler) internally; that method is also exposed for custom or arbitrary HTTP calls that may return 402. also exposed for custom or arbitrary HTTP calls that may return 402.
