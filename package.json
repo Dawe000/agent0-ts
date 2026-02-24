@@ -31,6 +31,7 @@
     "test:x402-anvil": "RUN_X402_ANVIL=1 jest --testPathPattern=x402-anvil",
     "a2a-server": "node tests/a2a-server/server.mjs",
     "test:a2a-integration": "RUN_A2A_INTEGRATION=1 jest --testPathPattern=a2a-integration",
+    "test:a2a-anvil": "RUN_A2A_ANVIL=1 jest --testPathPattern=a2a-anvil",
     "forge:build": "forge build",
     "anvil:node": "anvil --port 8545",
     "lint": "eslint src",

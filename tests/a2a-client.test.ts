@@ -10,6 +10,7 @@ import {
   createTaskHandle,
   postAndParseMessageSend,
 } from '../src/core/a2a-client.js';
+import type { X402RequestDeps } from '../src/core/x402-request.js';
 import type { RegistrationFile } from '../src/models/interfaces.js';
 import { EndpointType, TrustModel } from '../src/models/enums.js';
 import { Agent } from '../src/core/agent.js';
@@ -209,6 +210,61 @@ describe('sendMessage (mocked fetch)', () => {
     await expect(sendMessage({ baseUrl, a2aVersion, content: 'hi' })).rejects.toThrow(
       'A2A request failed: HTTP 500'
     );
+  });
+});
+
+describe('sendMessage with x402Deps (402 then pay())', () => {
+  const baseUrl = 'https://a2a.example.com';
+  const a2aVersion = '0.3';
+  const validPayload = Buffer.from(
+    JSON.stringify({
+      x402Version: 1,
+      scheme: 'exact',
+      network: '84532',
+      payload: {
+        signature: '0x' + 'a'.repeat(130),
+        authorization: { from: '0x123', to: '0x456', value: '1000000', validAfter: '0', validBefore: '9999999999', nonce: '0x' + 'b'.repeat(64) },
+      },
+    })
+  ).toString('base64');
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('returns x402Required on 402, then pay() retries and returns message', async () => {
+    const accepts = [{ price: '1000000', token: '0xToken', network: '84532', destination: '0xDest' }];
+    const messageBody = {
+      message: { content: 'Paid response', parts: [{ text: 'Paid response' }], contextId: 'ctx-1' },
+    };
+    const fetchSpy = jest
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(mockResponse({ status: 402, body: { accepts } }))
+      .mockResolvedValueOnce(mockResponse({ status: 200, body: messageBody }));
+
+    const x402Deps: X402RequestDeps = {
+      fetch: globalThis.fetch,
+      buildPayment: async () => validPayload,
+    };
+
+    const result = await sendMessage(
+      { baseUrl, a2aVersion, content: 'hi' },
+      x402Deps
+    );
+
+    expect('x402Required' in result && result.x402Required).toBe(true);
+    if (!('x402Required' in result) || !result.x402Required) return;
+
+    const paid = await result.x402Payment.pay();
+    expect('task' in paid).toBe(false);
+    if (!('task' in paid)) {
+      expect(paid.content).toBe('Paid response');
+      expect(paid.contextId).toBe('ctx-1');
+    }
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    const secondCall = (fetchSpy.mock.calls[1] as any)[1];
+    expect(secondCall.headers['PAYMENT-SIGNATURE']).toBe(validPayload);
   });
 });
 
