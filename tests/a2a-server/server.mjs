@@ -83,6 +83,9 @@ function send(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
+// In-memory task store for GET /tasks (list). Pushed when POST /message:send returns a task.
+const taskStore = [];
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url || '', `http://localhost:${PORT}`);
   const pathname = url.pathname;
@@ -132,6 +135,15 @@ const server = http.createServer(async (req, res) => {
       const respondWithTask = RESPOND_WITH === 'task' || firstText.toLowerCase().includes('task');
       if (respondWithTask) {
         const taskId = `task-${Date.now()}`;
+        const taskRecord = {
+          id: taskId,
+          taskId,
+          contextId,
+          status: { state: 'open' },
+          messages: [],
+          artifacts: [],
+        };
+        taskStore.push(taskRecord);
         return send(res, 200, {
           taskId,
           contextId,
@@ -153,11 +165,32 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    // GET /tasks (list) — optional contextId, status, pageSize, pageToken
+    if (req.method === 'GET' && pathname === '/tasks') {
+      if (!checkAuth()) return send(res, 401, { error: 'Missing or invalid X-API-Key' });
+      const contextId = url.searchParams.get('contextId');
+      const status = url.searchParams.get('status');
+      const pageSize = Math.min(parseInt(url.searchParams.get('pageSize') || '100', 10), 100);
+      const pageToken = url.searchParams.get('pageToken') || '0';
+
+      let list = taskStore.slice();
+      if (contextId) list = list.filter((t) => t.contextId === contextId);
+      if (status) list = list.filter((t) => (t.status?.state || 'open') === status);
+      const start = parseInt(pageToken, 10) || 0;
+      const page = list.slice(start, start + pageSize);
+      const nextPageToken = start + page.length < list.length ? String(start + pageSize) : undefined;
+      return send(res, 200, { tasks: page, nextPageToken });
+    }
+
     // GET /tasks/:id
     if (req.method === 'GET' && pathname.startsWith('/tasks/') && !pathname.endsWith(':cancel')) {
       if (!checkAuth()) return send(res, 401, { error: 'Missing or invalid X-API-Key' });
       const taskId = getTaskIdFromPath(pathname, false);
       if (!taskId) return send(res, 404, { error: 'not found' });
+      const stored = taskStore.find((t) => t.id === taskId || t.taskId === taskId);
+      if (stored) {
+        return send(res, 200, stored);
+      }
       return send(res, 200, {
         id: taskId,
         taskId,
@@ -173,10 +206,12 @@ const server = http.createServer(async (req, res) => {
       if (!checkAuth()) return send(res, 401, { error: 'Missing or invalid X-API-Key' });
       const taskId = getTaskIdFromPath(pathname, true);
       if (!taskId) return send(res, 404, { error: 'not found' });
+      const stored = taskStore.find((t) => t.id === taskId || t.taskId === taskId);
+      if (stored) stored.status = { state: 'canceled' };
       return send(res, 200, {
         id: taskId,
         taskId,
-        contextId: `ctx-${taskId}`,
+        contextId: stored?.contextId || `ctx-${taskId}`,
         status: { state: 'canceled' },
       });
     }

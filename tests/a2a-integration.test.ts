@@ -142,6 +142,36 @@ describeIntegration('A2A integration (server)', () => {
       expect(cancelResult.status).toEqual({ state: 'canceled' });
     }
   }, 15000);
+
+  it('listTasks returns tasks after messageA2A creates one; loadTask returns same handle', async () => {
+    const agent = makeAgentWithA2AEndpoint(BASE_URL);
+    const result = await agent.messageA2A('create task');
+
+    expect('task' in result).toBe(true);
+    if (!('task' in result)) return;
+    const { taskId, contextId, task } = result;
+
+    const list = await agent.listTasks();
+    expect(Array.isArray(list)).toBe(true);
+    const tasks = list as import('../src/models/a2a.js').TaskSummary[];
+    expect(tasks.length).toBeGreaterThanOrEqual(1);
+    const found = tasks.find((t) => t.taskId === taskId);
+    expect(found).toBeDefined();
+    expect(found!.contextId).toBe(contextId);
+
+    const loaded = await agent.loadTask(taskId);
+    expect('x402Required' in loaded).toBe(false);
+    if (!('x402Required' in loaded)) {
+      expect(loaded.taskId).toBe(taskId);
+      expect(loaded.contextId).toBe(contextId);
+      const queryResult = await loaded.query();
+      expect('x402Required' in queryResult).toBe(false);
+      if (!('x402Required' in queryResult)) {
+        expect(queryResult.taskId).toBe(taskId);
+        expect(queryResult.status).toEqual({ state: 'open' });
+      }
+    }
+  }, 15000);
 });
 
 describeIntegration('A2A integration (server with 402)', () => {

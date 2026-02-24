@@ -15,8 +15,17 @@ import type {
   MessageA2AOptions,
   A2APaymentRequired,
   AgentCardAuth,
+  ListTasksOptions,
+  TaskSummary,
+  AgentTask,
 } from '../models/a2a.js';
-import { sendMessage as sendMessageA2A } from './a2a-client.js';
+import {
+  sendMessage as sendMessageA2A,
+  listTasks as listTasksA2A,
+  getTask as getTaskA2A,
+  createTaskHandle,
+  applyCredential,
+} from './a2a-client.js';
 import type { AgentId, Address, URI } from '../models/types.js';
 import { EndpointType, TrustModel } from '../models/enums.js';
 import type { SDK } from './sdk.js';
@@ -256,6 +265,71 @@ export class Agent {
     if (hasSchemes) auth.securitySchemes = schemes as AgentCardAuth['securitySchemes'];
     if (hasSecurity) auth.security = security as AgentCardAuth['security'];
     return auth;
+  }
+
+  /**
+   * List tasks for this agent (GET /tasks with filter). Fetches all pages internally.
+   * May return x402Required if the list endpoint returns 402 (see §2.3, §4).
+   */
+  async listTasks(
+    options?: ListTasksOptions
+  ): Promise<TaskSummary[] | A2APaymentRequired<TaskSummary[]>> {
+    const baseUrl = this._getA2aBaseUrl();
+    const ep = this.registrationFile.endpoints.find((e) => e.type === EndpointType.A2A);
+    const a2aVersion = (ep?.meta?.version as string) ?? '0.3';
+    const auth = this._getA2aAuthFromMeta(ep?.meta);
+    const x402Deps = this.sdk.getX402RequestDeps?.();
+    return listTasksA2A({ baseUrl, a2aVersion, options, auth }, x402Deps);
+  }
+
+  /**
+   * Load a task by ID. Returns same AgentTask as response.task (query, message, cancel).
+   * When the server requires auth, pass options.credential. May return x402Required (see §2.2, §4).
+   */
+  async loadTask(
+    taskId: string,
+    options?: { credential?: string | import('../models/a2a.js').CredentialObject }
+  ): Promise<AgentTask | A2APaymentRequired<AgentTask>> {
+    const baseUrl = this._getA2aBaseUrl();
+    const ep = this.registrationFile.endpoints.find((e) => e.type === EndpointType.A2A);
+    const a2aVersion = (ep?.meta?.version as string) ?? '0.3';
+    const cardAuth = this._getA2aAuthFromMeta(ep?.meta);
+    const resolvedAuth =
+      options?.credential != null && cardAuth ? applyCredential(options.credential, cardAuth) : undefined;
+    const x402Deps = this.sdk.getX402RequestDeps?.();
+
+    const result = await getTaskA2A(baseUrl, a2aVersion, taskId, resolvedAuth, x402Deps);
+
+    if ('x402Required' in result && result.x402Required) {
+      const original = result as A2APaymentRequired<TaskSummary>;
+      return {
+        x402Required: true,
+        x402Payment: {
+          ...original.x402Payment,
+          pay: async (accept?: unknown) => {
+            const summary = await original.x402Payment.pay(accept);
+            return createTaskHandle(
+              baseUrl,
+              a2aVersion,
+              summary.taskId,
+              summary.contextId,
+              x402Deps,
+              resolvedAuth
+            );
+          },
+        },
+      };
+    }
+
+    const summary = result as TaskSummary;
+    return createTaskHandle(
+      baseUrl,
+      a2aVersion,
+      summary.taskId,
+      summary.contextId,
+      x402Deps,
+      resolvedAuth
+    );
   }
 
   setENS(name: string, version: string = '1.0'): this {

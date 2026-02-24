@@ -13,6 +13,8 @@ import type {
   TaskState,
   TaskQueryResult,
   TaskCancelResult,
+  TaskSummary,
+  ListTasksOptions,
   CredentialObject,
   SecurityScheme,
   AgentCardAuth,
@@ -293,6 +295,140 @@ export function createTaskHandle(
     },
   };
   return task;
+}
+
+export interface ListTasksParams {
+  baseUrl: string;
+  a2aVersion: string;
+  options?: ListTasksOptions;
+  auth?: AgentCardAuth;
+}
+
+const DEFAULT_PAGE_SIZE = 100;
+
+function toTaskSummary(raw: Record<string, unknown>): TaskSummary {
+  const taskId = String(raw.id ?? raw.taskId ?? '');
+  const contextId = String(raw.contextId ?? '');
+  return {
+    taskId,
+    contextId,
+    status: raw.status as TaskState | undefined,
+    messages: raw.messages as unknown[] | undefined,
+    ...raw,
+  };
+}
+
+/**
+ * Fetch a single task by ID (GET /tasks/:id). Used by loadTask to get contextId and build AgentTask.
+ * When x402Deps provided, 402 returns x402Required + pay() instead of throwing.
+ */
+export async function getTask(
+  baseUrl: string,
+  a2aVersion: string,
+  taskId: string,
+  auth?: A2AAuth,
+  x402Deps?: X402RequestDeps
+): Promise<TaskSummary | X402RequiredResponse<TaskSummary>> {
+  const url = appendQueryParams(`${baseUrl}/tasks/${encodeURIComponent(taskId)}`, auth?.queryParams ?? {});
+  if (x402Deps) {
+    const result = await requestWithX402<TaskSummary>(
+      {
+        url,
+        method: 'GET',
+        headers: a2aHeaders(a2aVersion, auth),
+        parseResponse: async (res) => {
+          if (!res.ok) throw new Error(`Get task failed: HTTP ${res.status} ${res.statusText}`);
+          const data = (await res.json()) as Record<string, unknown>;
+          return toTaskSummary(data);
+        },
+      },
+      x402Deps
+    );
+    return result as TaskSummary | X402RequiredResponse<TaskSummary>;
+  }
+  const res = await fetch(url, { method: 'GET', headers: a2aHeaders(a2aVersion, auth) });
+  if (res.status === 402) throw new Error(ERR_402);
+  if (!res.ok) throw new Error(`Get task failed: HTTP ${res.status} ${res.statusText}`);
+  const data = (await res.json()) as Record<string, unknown>;
+  return toTaskSummary(data);
+}
+
+/**
+ * List tasks (GET /tasks with optional filter, historyLength). Fetches all pages internally.
+ * When x402Deps provided, 402 on the first request returns x402Required + pay().
+ */
+export async function listTasks(
+  params: ListTasksParams,
+  x402Deps?: X402RequestDeps
+): Promise<TaskSummary[] | X402RequiredResponse<TaskSummary[]>> {
+  const { baseUrl, a2aVersion, options, auth: cardAuth } = params;
+  const resolvedAuth =
+    options?.credential != null && cardAuth ? applyCredential(options.credential, cardAuth) : undefined;
+
+  const buildListUrl = (token?: string) => {
+    const q = new URLSearchParams();
+    if (options?.filter?.contextId) q.set('contextId', options.filter.contextId);
+    if (options?.filter?.status) q.set('status', options.filter.status);
+    if (options?.historyLength !== undefined) q.set('historyLength', String(options.historyLength));
+    q.set('pageSize', String(DEFAULT_PAGE_SIZE));
+    if (token) q.set('pageToken', token);
+    const url = `${baseUrl}/tasks?${q.toString()}`;
+    return appendQueryParams(url, resolvedAuth?.queryParams ?? {});
+  };
+
+  const parseListPage = (data: Record<string, unknown>) => {
+    const tasks = (data.tasks ?? data.items ?? data.results ?? []) as Record<string, unknown>[];
+    const nextToken = (data.nextPageToken ?? data.pageToken ?? data.nextPage) as string | undefined;
+    return { tasks: tasks.map((t) => toTaskSummary(t)), nextPageToken: nextToken };
+  };
+
+  const fetchOnePage = async (url: string): Promise<{ tasks: TaskSummary[]; nextPageToken?: string }> => {
+    const res = await fetch(url, { method: 'GET', headers: a2aHeaders(a2aVersion, resolvedAuth) });
+    if (res.status === 402) throw new Error(ERR_402);
+    if (!res.ok) throw new Error(`List tasks failed: HTTP ${res.status} ${res.statusText}`);
+    const data = (await res.json()) as Record<string, unknown>;
+    return parseListPage(data);
+  };
+
+  if (x402Deps) {
+    const result = await requestWithX402<TaskSummary[]>(
+      {
+        url: buildListUrl(),
+        method: 'GET',
+        headers: a2aHeaders(a2aVersion, resolvedAuth),
+        parseResponse: async (res) => {
+          if (!res.ok) throw new Error(`List tasks failed: HTTP ${res.status} ${res.statusText}`);
+          const data = (await res.json()) as Record<string, unknown>;
+          const { tasks: firstTasks, nextPageToken: firstNext } = parseListPage(data);
+          const merged = [...firstTasks];
+          let token = firstNext;
+          while (token) {
+            const url = buildListUrl(token);
+            const page = await fetchOnePage(url);
+            merged.push(...page.tasks);
+            token = page.nextPageToken;
+          }
+          return merged;
+        },
+      },
+      x402Deps
+    );
+    if ('x402Required' in result && result.x402Required) {
+      return result as X402RequiredResponse<TaskSummary[]>;
+    }
+    return result as TaskSummary[];
+  }
+
+  const allTasks: TaskSummary[] = [];
+  let pageToken: string | undefined;
+  do {
+    const url = buildListUrl(pageToken);
+    const page = await fetchOnePage(url);
+    allTasks.push(...page.tasks);
+    pageToken = page.nextPageToken;
+  } while (pageToken);
+
+  return allTasks;
 }
 
 export interface SendMessageParams {

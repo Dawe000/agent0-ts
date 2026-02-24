@@ -95,6 +95,23 @@ export type TaskQueryResult = { taskId: string; contextId: string; status?: Task
 /** Result of task.cancel(): state or 402. */
 export type TaskCancelResult = { taskId: string; contextId: string; status?: TaskState };
 
+/** Summary of a task returned by listTasks. */
+export interface TaskSummary {
+  taskId: string;
+  contextId: string;
+  status?: TaskState;
+  /** Optional message history when historyLength > 0. */
+  messages?: unknown[];
+  [key: string]: unknown;
+}
+
+/** Options for listTasks (filter, historyLength, credential per §2.3). */
+export interface ListTasksOptions {
+  filter?: { contextId?: string; status?: string; [key: string]: unknown };
+  historyLength?: number;
+  credential?: string | CredentialObject;
+}
+
 /**
  * Task handle: read-only taskId, contextId, and methods query, message, cancel.
  * Returned by response.task and by agent.loadTask(taskId).

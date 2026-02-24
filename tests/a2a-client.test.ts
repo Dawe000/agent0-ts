@@ -10,6 +10,8 @@ import {
   createTaskHandle,
   postAndParseMessageSend,
   applyCredential,
+  listTasks,
+  getTask,
 } from '../src/core/a2a-client.js';
 import type { X402RequestDeps } from '../src/core/x402-request.js';
 import type { RegistrationFile } from '../src/models/interfaces.js';
@@ -511,6 +513,108 @@ describe('sendMessage with x402Deps (402 then pay())', () => {
   });
 });
 
+describe('listTasks', () => {
+  const baseUrl = 'https://a2a.example.com';
+  const a2aVersion = '0.3';
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('GETs /tasks and returns merged task list', async () => {
+    const tasksBody = {
+      tasks: [
+        { id: 't1', taskId: 't1', contextId: 'ctx-1', status: { state: 'open' } },
+        { id: 't2', taskId: 't2', contextId: 'ctx-1', status: { state: 'open' } },
+      ],
+    };
+    jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce(mockResponse({ status: 200, body: tasksBody }));
+
+    const result = await listTasks({ baseUrl, a2aVersion });
+
+    expect(Array.isArray(result)).toBe(true);
+    const list = result as import('../src/models/a2a.js').TaskSummary[];
+    expect(list).toHaveLength(2);
+    expect(list[0].taskId).toBe('t1');
+    expect(list[0].contextId).toBe('ctx-1');
+    expect(list[1].taskId).toBe('t2');
+    expect((globalThis.fetch as jest.Mock).mock.calls[0][0]).toContain('/tasks');
+    expect((globalThis.fetch as jest.Mock).mock.calls[0][0]).toContain('pageSize=100');
+  });
+
+  it('includes filter params in URL when provided', async () => {
+    jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce(mockResponse({ status: 200, body: { tasks: [] } }));
+
+    await listTasks({
+      baseUrl,
+      a2aVersion,
+      options: { filter: { contextId: 'ctx-x', status: 'open' }, historyLength: 5 },
+    });
+
+    const url = (globalThis.fetch as jest.Mock).mock.calls[0][0];
+    expect(url).toContain('contextId=ctx-x');
+    expect(url).toContain('status=open');
+    expect(url).toContain('historyLength=5');
+  });
+
+  it('fetches all pages when nextPageToken is returned', async () => {
+    jest
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        mockResponse({
+          status: 200,
+          body: { tasks: [{ id: 't1', taskId: 't1', contextId: 'c1', status: {} }], nextPageToken: '100' },
+        })
+      )
+      .mockResolvedValueOnce(
+        mockResponse({
+          status: 200,
+          body: { tasks: [{ id: 't2', taskId: 't2', contextId: 'c1', status: {} }] },
+        })
+      );
+
+    const result = await listTasks({ baseUrl, a2aVersion });
+
+    const list = result as import('../src/models/a2a.js').TaskSummary[];
+    expect(list).toHaveLength(2);
+    expect(list[0].taskId).toBe('t1');
+    expect(list[1].taskId).toBe('t2');
+    expect((globalThis.fetch as jest.Mock).mock.calls[1][0]).toContain('pageToken=100');
+  });
+});
+
+describe('getTask', () => {
+  const baseUrl = 'https://a2a.example.com';
+  const a2aVersion = '0.3';
+  const taskId = 'task-123';
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('GETs /tasks/:id and returns TaskSummary', async () => {
+    const taskBody = {
+      id: taskId,
+      taskId,
+      contextId: 'ctx-abc',
+      status: { state: 'working' },
+      messages: [],
+      artifacts: [],
+    };
+    jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce(mockResponse({ status: 200, body: taskBody }));
+
+    const result = await getTask(baseUrl, a2aVersion, taskId);
+
+    expect('x402Required' in result).toBe(false);
+    if (!('x402Required' in result)) {
+      expect(result.taskId).toBe(taskId);
+      expect(result.contextId).toBe('ctx-abc');
+      expect(result.status).toEqual({ state: 'working' });
+    }
+    expect((globalThis.fetch as jest.Mock).mock.calls[0][0]).toBe(`${baseUrl}/tasks/task-123`);
+  });
+});
+
 describe('createTaskHandle', () => {
   const baseUrl = 'https://a2a.example.com';
   const a2aVersion = '0.3';
@@ -704,5 +808,44 @@ describe('Agent.messageA2A', () => {
         headers: expect.objectContaining({ 'A2A-Version': '0.30' }),
       })
     );
+  });
+
+  it('listTasks GETs /tasks and returns task array', async () => {
+    const tasksBody = {
+      tasks: [{ id: 't1', taskId: 't1', contextId: 'ctx-1', status: { state: 'open' } }],
+    };
+    const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce(mockResponse({ status: 200, body: tasksBody }));
+
+    const agent = makeAgentWithA2A('https://a2a.example.com');
+    const result = await agent.listTasks();
+
+    expect(Array.isArray(result)).toBe(true);
+    const list = result as import('../src/models/a2a.js').TaskSummary[];
+    expect(list).toHaveLength(1);
+    expect(list[0].taskId).toBe('t1');
+    expect(fetchSpy.mock.calls[0][0]).toContain('https://a2a.example.com/tasks');
+  });
+
+  it('loadTask GETs /tasks/:id and returns AgentTask', async () => {
+    const taskBody = {
+      id: 'task-xyz',
+      taskId: 'task-xyz',
+      contextId: 'ctx-99',
+      status: { state: 'open' },
+    };
+    const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce(mockResponse({ status: 200, body: taskBody }));
+
+    const agent = makeAgentWithA2A('https://a2a.example.com');
+    const task = await agent.loadTask('task-xyz');
+
+    expect('x402Required' in task).toBe(false);
+    if (!('x402Required' in task)) {
+      expect(task.taskId).toBe('task-xyz');
+      expect(task.contextId).toBe('ctx-99');
+      expect(typeof task.query).toBe('function');
+      expect(typeof task.message).toBe('function');
+      expect(typeof task.cancel).toBe('function');
+    }
+    expect(fetchSpy.mock.calls[0][0]).toBe('https://a2a.example.com/tasks/task-xyz');
   });
 });
