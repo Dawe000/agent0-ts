@@ -173,4 +173,52 @@ describeAnvil('A2A Anvil integration (real chain + A2A 402 + pay())', () => {
       expect(paid.contextId).toBeDefined();
     }
   }, 20000);
+
+  it('messageA2A("create task") → 402 → pay() → task, then task.query/message/cancel (real chain)', async () => {
+    const sdk = new SDK({
+      chainId: CHAIN_ID,
+      rpcUrl: RPC_URL,
+      privateKey: ANVIL_ACCOUNT_0_PRIVATE_KEY,
+    });
+
+    const agent = await sdk.createAgent('Test Agent', 'Test').setA2A(baseUrl, '0.3', false);
+    const result = await agent.messageA2A('create task');
+
+    expect('x402Required' in result && result.x402Required).toBe(true);
+    if (!('x402Required' in result) || !result.x402Required) return;
+
+    const paid = await result.x402Payment.pay();
+    expect('x402Required' in paid).toBe(false);
+    expect('task' in paid).toBe(true);
+    if (!('task' in paid)) return;
+
+    const { taskId, task } = paid;
+    expect(taskId).toBeDefined();
+    expect(task.contextId).toBeDefined();
+
+    const queryResult = await task.query({ historyLength: 5 });
+    expect('x402Required' in queryResult).toBe(false);
+    if (!('x402Required' in queryResult)) {
+      expect(queryResult.taskId).toBe(taskId);
+      expect(queryResult.status).toEqual({ state: 'open' });
+    }
+
+    const msgResult = await task.message('follow up');
+    const paidMsg =
+      'x402Required' in msgResult && msgResult.x402Required
+        ? await msgResult.x402Payment.pay()
+        : msgResult;
+    expect('x402Required' in paidMsg).toBe(false);
+    expect('task' in paidMsg).toBe(false);
+    if (!('x402Required' in paidMsg) && !('task' in paidMsg)) {
+      expect(paidMsg.content).toContain('Echo: follow up');
+    }
+
+    const cancelResult = await task.cancel();
+    expect('x402Required' in cancelResult).toBe(false);
+    if (!('x402Required' in cancelResult)) {
+      expect(cancelResult.taskId).toBe(taskId);
+      expect(cancelResult.status).toEqual({ state: 'canceled' });
+    }
+  }, 25000);
 });

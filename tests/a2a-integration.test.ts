@@ -13,10 +13,12 @@ import type { SDK } from '../src/core/sdk.js';
 
 const INTEGRATION_PORT = 4030;
 const INTEGRATION_402_PORT = 4031;
+const INTEGRATION_402_TASKS_PORT = 4033;
 const INTEGRATION_AUTH_PORT = 4032;
 const SERVER_PATH = 'tests/a2a-server/server.mjs';
 const BASE_URL = `http://localhost:${INTEGRATION_PORT}`;
 const BASE_URL_402 = `http://localhost:${INTEGRATION_402_PORT}`;
+const BASE_URL_402_TASKS = `http://localhost:${INTEGRATION_402_TASKS_PORT}`;
 const BASE_URL_AUTH = `http://localhost:${INTEGRATION_AUTH_PORT}`;
 const AUTH_EXPECTED_KEY = 'test-secret';
 
@@ -209,6 +211,87 @@ describeIntegration('A2A integration (server with 402)', () => {
       expect(paid.contextId).toBeDefined();
     }
   }, 10000);
+});
+
+describeIntegration('A2A integration (server with 402 on message and tasks)', () => {
+  beforeAll(async () => {
+    serverProcess = spawn('node', [SERVER_PATH], {
+      env: {
+        ...process.env,
+        PORT: String(INTEGRATION_402_TASKS_PORT),
+        A2A_402: '1',
+        A2A_402_TASKS: '1',
+        RESPOND_WITH: 'task',
+      },
+      stdio: 'pipe',
+    });
+    await waitForServer(BASE_URL_402_TASKS);
+  }, 15000);
+
+  afterAll(() => {
+    if (serverProcess) {
+      serverProcess.kill();
+      serverProcess = null;
+    }
+  });
+
+  it('messageA2A → 402 → pay() → task, then task.query/cancel and listTasks/loadTask each 402 → pay()', async () => {
+    const agent = makeAgentWithA2AEndpoint(BASE_URL_402_TASKS, async () => VALID_PAYLOAD_402);
+
+    // 1. Create task (message:send 402 → pay)
+    const sendResult = await agent.messageA2A('create task');
+    expect('x402Required' in sendResult && sendResult.x402Required).toBe(true);
+    if (!('x402Required' in sendResult) || !sendResult.x402Required) return;
+    const paidSend = await sendResult.x402Payment.pay();
+    expect('task' in paidSend).toBe(true);
+    if (!('task' in paidSend)) return;
+    const { taskId, contextId, task } = paidSend;
+
+    // 2. task.query() → 402 → pay()
+    const queryResult = await task.query({ historyLength: 5 });
+    expect('x402Required' in queryResult && queryResult.x402Required).toBe(true);
+    if (!('x402Required' in queryResult) || !queryResult.x402Required) return;
+    const paidQuery = await queryResult.x402Payment.pay();
+    expect('x402Required' in paidQuery).toBe(false);
+    if (!('x402Required' in paidQuery)) {
+      expect(paidQuery.taskId).toBe(taskId);
+      expect(paidQuery.status).toEqual({ state: 'open' });
+    }
+
+    // 3. listTasks() → 402 → pay()
+    const listResult = await agent.listTasks();
+    expect('x402Required' in listResult && listResult.x402Required).toBe(true);
+    if (!('x402Required' in listResult) || !listResult.x402Required) return;
+    const paidList = await listResult.x402Payment.pay();
+    expect(Array.isArray(paidList)).toBe(true);
+    const list = paidList as import('../src/models/a2a.js').TaskSummary[];
+    expect(list.some((t) => t.taskId === taskId)).toBe(true);
+
+    // 4. loadTask(taskId) → 402 → pay()
+    const loadResult = await agent.loadTask(taskId);
+    expect('x402Required' in loadResult && loadResult.x402Required).toBe(true);
+    if (!('x402Required' in loadResult) || !loadResult.x402Required) return;
+    const paidLoad = await loadResult.x402Payment.pay();
+    expect('x402Required' in paidLoad).toBe(false);
+    expect(paidLoad.taskId).toBe(taskId);
+    expect(paidLoad.contextId).toBe(contextId);
+    const loadedQuery = await paidLoad.query();
+    expect('x402Required' in loadedQuery && loadedQuery.x402Required).toBe(true);
+    if (!('x402Required' in loadedQuery) || !loadedQuery.x402Required) return;
+    const paidLoadedQuery = await loadedQuery.x402Payment.pay();
+    expect(paidLoadedQuery.taskId).toBe(taskId);
+
+    // 5. task.cancel() → 402 → pay()
+    const cancelResult = await task.cancel();
+    expect('x402Required' in cancelResult && cancelResult.x402Required).toBe(true);
+    if (!('x402Required' in cancelResult) || !cancelResult.x402Required) return;
+    const paidCancel = await cancelResult.x402Payment.pay();
+    expect('x402Required' in paidCancel).toBe(false);
+    if (!('x402Required' in paidCancel)) {
+      expect(paidCancel.taskId).toBe(taskId);
+      expect(paidCancel.status).toEqual({ state: 'canceled' });
+    }
+  }, 25000);
 });
 
 describeIntegration('A2A integration (server with auth)', () => {
