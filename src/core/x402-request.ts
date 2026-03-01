@@ -5,7 +5,7 @@
  */
 
 import type { X402Accept, X402Payment, X402RequestOptions, X402RequiredResponse, X402RequestResult } from './x402-types.js';
-import { parse402AcceptsFromHeader } from './x402-types.js';
+import { parse402FromHeader } from './x402-types.js';
 
 /** Snapshot of the original request so pay() can retry the same request with PAYMENT-SIGNATURE. */
 export interface RequestSnapshot {
@@ -13,6 +13,8 @@ export interface RequestSnapshot {
   method: string;
   headers: Record<string, string>;
   body?: string | ArrayBuffer | Uint8Array;
+  /** x402 version from server's 402 PAYMENT-REQUIRED header (1 or 2). When set, buildPayment uses it for payload shape. */
+  x402Version?: number;
 }
 
 export interface X402RequestDeps {
@@ -66,11 +68,12 @@ export async function requestWithX402<T = Response>(
     // x402 spec: payment options only in PAYMENT-REQUIRED header (base64 JSON).
     const headerPayload =
       response.headers.get('payment-required') ?? response.headers.get('PAYMENT-REQUIRED');
-    const accepts = parse402AcceptsFromHeader(headerPayload);
+    const { accepts, x402Version } = parse402FromHeader(headerPayload);
     const singleAccept = accepts.length === 1 ? accepts[0]! : undefined;
 
     const x402Payment: X402Payment<T> = {
       accepts,
+      ...(x402Version !== undefined && { x402Version }),
       ...(singleAccept && {
         price: singleAccept.price,
         token: singleAccept.token,
@@ -88,13 +91,30 @@ export async function requestWithX402<T = Response>(
         if (!chosen) {
           throw new Error('x402: no payment option selected (empty accepts or invalid index)');
         }
-        const payload = await deps.buildPayment(chosen, snapshot);
+        const payload = await deps.buildPayment(chosen, { ...snapshot, x402Version });
         const retryResponse = await doFetch(payload);
         if (!retryResponse.ok) {
+          let body = '';
+          try {
+            body = await retryResponse.text();
+          } catch {
+            body = '(failed to read body)';
+          }
+          const paymentRequired = retryResponse.headers.get('payment-required') ?? retryResponse.headers.get('PAYMENT-REQUIRED');
+          const paymentResponse = retryResponse.headers.get('payment-response') ?? retryResponse.headers.get('PAYMENT-RESPONSE');
           const msg = retryResponse.status === 402
             ? 'x402: payment rejected or insufficient (server returned 402 again)'
             : `x402: retry failed with HTTP ${retryResponse.status}`;
-          throw new Error(msg);
+          const err = new Error(msg) as Error & { status?: number; body?: string; headers?: Record<string, string>; url?: string };
+          err.status = retryResponse.status;
+          err.body = body;
+          err.url = snapshot.url;
+          err.headers = {
+            ...(paymentRequired && { 'payment-required': paymentRequired }),
+            ...(paymentResponse && { 'payment-response': paymentResponse }),
+          };
+          if (Object.keys(err.headers).length === 0) delete err.headers;
+          throw err;
         }
         return parseResponse(retryResponse);
       },

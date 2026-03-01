@@ -33,6 +33,8 @@ export interface X402Accept {
 export interface X402Payment<T = unknown> {
   /** Array of accepted payment options. Always present. */
   accepts: X402Accept[];
+  /** x402 version from server's PAYMENT-REQUIRED header (e.g. 1 or 2). */
+  x402Version?: number;
   /** When single accept: convenience price (same as accepts[0].price). */
   price?: string;
   /** When single accept: convenience token (same as accepts[0].token). */
@@ -115,20 +117,39 @@ function decodeBase64(b64: string): string {
 }
 
 /**
+ * Result of parsing PAYMENT-REQUIRED header (accepts + optional version).
+ */
+export interface Parse402FromHeaderResult {
+  accepts: X402Accept[];
+  x402Version?: number;
+}
+
+/**
+ * Parse PAYMENT-REQUIRED header (x402 spec: base64-encoded JSON with accepts array).
+ * Returns accepts and x402Version when present.
+ */
+export function parse402FromHeader(headerValue: string | null): Parse402FromHeaderResult {
+  if (!headerValue || typeof headerValue !== 'string') return { accepts: [] };
+  try {
+    const json = JSON.parse(decodeBase64(headerValue.trim())) as Record<string, unknown>;
+    if (json == null || typeof json !== 'object') return { accepts: [] };
+    const list = json.accepts;
+    const accepts = Array.isArray(list)
+      ? list
+          .filter((e): e is Record<string, unknown> => typeof e === 'object' && e !== null)
+          .map(normalizeAcceptEntry)
+      : [];
+    const x402Version = typeof json.x402Version === 'number' ? json.x402Version : undefined;
+    return { accepts, x402Version };
+  } catch {
+    return { accepts: [] };
+  }
+}
+
+/**
  * Parse PAYMENT-REQUIRED header (x402 spec: base64-encoded JSON with accepts array).
  * Server sends payment options in header; body may be empty. Returns [] if header missing/invalid.
  */
 export function parse402AcceptsFromHeader(headerValue: string | null): X402Accept[] {
-  if (!headerValue || typeof headerValue !== 'string') return [];
-  try {
-    const json = JSON.parse(decodeBase64(headerValue.trim()));
-    if (json == null || typeof json !== 'object') return [];
-    const list = json.accepts;
-    if (!Array.isArray(list)) return [];
-    return list
-      .filter((e): e is Record<string, unknown> => typeof e === 'object' && e !== null)
-      .map(normalizeAcceptEntry);
-  } catch {
-    return [];
-  }
+  return parse402FromHeader(headerValue).accepts;
 }

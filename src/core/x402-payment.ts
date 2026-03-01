@@ -156,23 +156,51 @@ export async function buildEvmPayment(
     message,
   });
 
+  // x402 spec: use server's x402Version from 402 response when available; else infer from CAIP-2 network.
+  const networkStr = accept.network ?? String(chainId);
+  const serverVersion = _snapshot?.x402Version;
+  const isV2 = serverVersion === 2 || (serverVersion == null && /^eip155:\d+$/.test(String(networkStr)));
+  const scheme = accept.scheme ?? 'exact';
+  const amount = value;
+  const payTo = to;
+
+  if (isV2) {
+    // V2 spec §5.2: client MUST send "accepted" = the chosen PaymentRequirements so server can match.
+    const accepted = {
+      scheme,
+      network: networkStr,
+      amount,
+      asset: token,
+      payTo,
+      maxTimeoutSeconds: typeof (accept as Record<string, unknown>).maxTimeoutSeconds === 'number'
+        ? (accept as Record<string, unknown>).maxTimeoutSeconds
+        : 60,
+      ...((accept as Record<string, unknown>).extra != null && { extra: (accept as Record<string, unknown>).extra }),
+    };
+    const payloadV2 = {
+      x402Version: 2,
+      accepted,
+      payload: {
+        signature,
+        authorization: { from, to, value, validAfter, validBefore, nonce },
+      },
+    };
+    const json = JSON.stringify(payloadV2);
+    const base64 = typeof Buffer !== 'undefined'
+      ? Buffer.from(json, 'utf8').toString('base64')
+      : btoa(unescape(encodeURIComponent(json)));
+    return base64;
+  }
+
   const payload = {
     x402Version: 1,
-    scheme: accept.scheme ?? 'exact',
-    network: accept.network ?? String(chainId),
+    scheme,
+    network: networkStr,
     payload: {
       signature,
-      authorization: {
-        from,
-        to,
-        value,
-        validAfter,
-        validBefore,
-        nonce,
-      },
+      authorization: { from, to, value, validAfter, validBefore, nonce },
     },
   };
-
   const json = JSON.stringify(payload);
   const base64 = typeof Buffer !== 'undefined'
     ? Buffer.from(json, 'utf8').toString('base64')

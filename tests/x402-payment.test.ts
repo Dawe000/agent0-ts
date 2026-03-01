@@ -95,11 +95,19 @@ describe('buildEvmPayment', () => {
     expect(payload.scheme).toBe('custom');
   });
 
-  it('uses accept.network when provided', async () => {
+  it('V2 payload has accepted (chosen PaymentRequirements) when network is CAIP-2 (eip155:*)', async () => {
     const client = createMockChainClient();
     const base64 = await buildEvmPayment({ ...accept, network: 'eip155:84532' }, client);
     const payload = decodePayload(base64);
-    expect(payload.network).toBe('eip155:84532');
+    expect(payload.x402Version).toBe(2);
+    expect(payload.accepted).toBeDefined();
+    const acc = payload.accepted as Record<string, unknown>;
+    expect(acc.network).toBe('eip155:84532');
+    expect(acc.scheme).toBe('exact');
+    expect(acc.amount).toBeDefined();
+    expect(acc.asset).toBeDefined();
+    expect(acc.payTo).toBeDefined();
+    expect(payload.payload).toBeDefined();
   });
 
   it('uses accept.maxAmountRequired when price not set', async () => {

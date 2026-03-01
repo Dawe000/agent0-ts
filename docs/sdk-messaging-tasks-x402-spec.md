@@ -235,6 +235,8 @@ These methods use a **generic HTTP x402 handler** internally (§4.2). The SDK al
 
 Callers can use this for arbitrary HTTP endpoints that may return 402; A2A and MCP methods call it internally with the appropriate URL, body, and parser.
 
+**x402 V1 vs V2:** The SDK supports both. The **PAYMENT-SIGNATURE** header name is used (V2). The payload shape (V1 vs V2) is determined by the **server’s 402 response**: when the server sends **x402Version** in the PAYMENT-REQUIRED header, the SDK uses that to build the matching payload (V2 includes the required **accepted** field). If the response does not include x402Version, the SDK falls back to inferring from the accept’s network (CAIP-2 form → V2).
+
 ### 4.3 Response shape when 402 is returned
 
 When the server responds with **HTTP 402**:
