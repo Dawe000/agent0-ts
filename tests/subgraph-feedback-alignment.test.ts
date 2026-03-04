@@ -2,11 +2,29 @@
  * Unit tests for subgraph-aligned Feedback: Feedback uses spec fields
  * (mcpTool, a2aSkills, a2aContextId, a2aTaskId, oasfSkills, oasfDomains)
  * and subgraph queries select those fields (no legacy capability/skill/task/context).
+ *
+ * Live subgraph tests run when RUN_LIVE_TESTS=1 (same as Py: SUBGRAPH_URL + RPC).
  */
 
+import { SDK } from '../src/index.js';
 import { FeedbackManager } from '../src/core/feedback-manager.js';
 import type { SubgraphClient } from '../src/core/subgraph-client.js';
 import type { ChainClient } from '../src/core/chain-client.js';
+import { CHAIN_ID, RPC_URL, SUBGRAPH_URL, AGENT_ID, printConfig } from './config.js';
+
+const RUN_LIVE = process.env.RUN_LIVE_TESTS === '1';
+const describeLive = RUN_LIVE ? describe : describe.skip;
+
+const SPEC_FIELDS = [
+  'mcpTool',
+  'mcpPrompt',
+  'mcpResource',
+  'a2aSkills',
+  'a2aContextId',
+  'a2aTaskId',
+  'oasfSkills',
+  'oasfDomains',
+] as const;
 
 describe('Subgraph feedback alignment', () => {
   it('searchFeedback maps subgraph feedbackFile spec fields to Feedback', async () => {
@@ -71,5 +89,38 @@ describe('Subgraph feedback alignment', () => {
     expect(feedback.value).toBe(75);
     expect(feedback.text).toBe('Great');
     expect(feedback.tags).toContain('tag1');
+  });
+});
+
+// Run with: RUN_LIVE_TESTS=1 npm test -- --testPathPattern=subgraph-feedback-alignment
+// Same default SUBGRAPH_URL as Py (tests/config); Feedback shape is spec-aligned in both SDKs.
+describeLive('Live subgraph (parity with Py)', () => {
+  it('searchFeedback succeeds and returns Feedback with spec-aligned shape', async () => {
+    printConfig();
+    const sdk = new SDK({
+      chainId: CHAIN_ID,
+      rpcUrl: RPC_URL,
+      subgraphOverrides: { [CHAIN_ID]: SUBGRAPH_URL },
+    });
+    expect(sdk.subgraphClient).toBeDefined();
+    const feedbacks = await sdk.searchFeedback({ agentId: AGENT_ID });
+    expect(Array.isArray(feedbacks)).toBe(true);
+    for (const fb of feedbacks) {
+      for (const key of SPEC_FIELDS) {
+        expect(fb).toHaveProperty(key);
+      }
+    }
+  });
+
+  it('getReputationSummary succeeds', async () => {
+    const sdk = new SDK({
+      chainId: CHAIN_ID,
+      rpcUrl: RPC_URL,
+      subgraphOverrides: { [CHAIN_ID]: SUBGRAPH_URL },
+    });
+    const result = await sdk.getReputationSummary(AGENT_ID);
+    expect(result).toBeDefined();
+    expect(typeof result.count).toBe('number');
+    expect(typeof result.averageValue).toBe('number');
   });
 });
