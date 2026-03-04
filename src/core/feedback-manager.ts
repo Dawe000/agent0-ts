@@ -232,18 +232,9 @@ export class FeedbackManager {
     }
 
     return new TransactionHandle(txHash as Hex, this.chainClient, async () => {
-      // Create feedback object (deterministic from submission-time inputs)
       const parsedId = parseFeedbackId(formatFeedbackId(agentId, clientAddress, feedbackIndex));
 
-      // Extract typed values from the optional off-chain file
       const textValue = feedbackFile && typeof feedbackFile.text === 'string' ? feedbackFile.text : undefined;
-      const contextValue =
-        feedbackFile &&
-        feedbackFile.context &&
-        typeof feedbackFile.context === 'object' &&
-        !Array.isArray(feedbackFile.context)
-          ? (feedbackFile.context as Record<string, any>)
-          : undefined;
       const proofOfPaymentValue =
         feedbackFile &&
         feedbackFile.proofOfPayment &&
@@ -251,6 +242,24 @@ export class FeedbackManager {
         !Array.isArray(feedbackFile.proofOfPayment)
           ? (feedbackFile.proofOfPayment as Record<string, any>)
           : undefined;
+
+      // Spec fields: use from input or map legacy keys for backward compat
+      const mcpTool = feedbackFile?.mcpTool ?? (typeof feedbackFile?.capability === 'string' ? feedbackFile.capability : undefined);
+      const a2aSkills = Array.isArray(feedbackFile?.a2aSkills)
+        ? feedbackFile.a2aSkills
+        : typeof feedbackFile?.skill === 'string'
+          ? [feedbackFile.skill]
+          : undefined;
+      const a2aContextId =
+        feedbackFile?.a2aContextId ??
+        (typeof feedbackFile?.context === 'string'
+          ? feedbackFile.context
+          : feedbackFile?.context && typeof feedbackFile.context === 'object' && 'id' in feedbackFile.context
+            ? (feedbackFile.context as { id?: string }).id
+            : undefined);
+      const a2aTaskId = feedbackFile?.a2aTaskId ?? (typeof feedbackFile?.task === 'string' ? feedbackFile.task : undefined);
+      const oasfSkills = Array.isArray(feedbackFile?.oasfSkills) ? feedbackFile.oasfSkills : undefined;
+      const oasfDomains = Array.isArray(feedbackFile?.oasfDomains) ? feedbackFile.oasfDomains : undefined;
 
       return {
         id: [parsedId.agentId, parsedId.clientAddress, parsedId.feedbackIndex] as FeedbackIdTuple,
@@ -261,17 +270,19 @@ export class FeedbackManager {
         tags: [tag1OnChain || undefined, tag2OnChain || undefined].filter(Boolean) as string[],
         endpoint: endpointOnChain || undefined,
         text: textValue,
-        context: contextValue,
         proofOfPayment: proofOfPaymentValue,
         fileURI: feedbackUri || undefined,
         createdAt: Math.floor(Date.now() / 1000),
         answers: [],
         isRevoked: false,
-        // Off-chain only fields
-        capability: feedbackFile && typeof feedbackFile.capability === 'string' ? feedbackFile.capability : undefined,
-        name: feedbackFile && typeof feedbackFile.name === 'string' ? feedbackFile.name : undefined,
-        skill: feedbackFile && typeof feedbackFile.skill === 'string' ? feedbackFile.skill : undefined,
-        task: feedbackFile && typeof feedbackFile.task === 'string' ? feedbackFile.task : undefined,
+        mcpTool,
+        mcpPrompt: feedbackFile?.mcpPrompt,
+        mcpResource: feedbackFile?.mcpResource,
+        a2aSkills,
+        a2aContextId,
+        a2aTaskId,
+        oasfSkills,
+        oasfDomains,
       };
     });
   }
@@ -532,19 +543,11 @@ export class FeedbackManager {
       };
     }
 
-    // Build context object if available
-    let context: Record<string, any> | undefined;
-    if (feedbackFile.context) {
-      try {
-        context = typeof feedbackFile.context === 'string'
-          ? JSON.parse(feedbackFile.context)
-          : feedbackFile.context;
-      } catch {
-        context = { raw: feedbackFile.context };
-      }
-    }
-
     const id: FeedbackIdTuple = [agentId, clientAddress, feedbackIndex];
+
+    const a2aSkills = Array.isArray(feedbackFile.a2aSkills) ? feedbackFile.a2aSkills : undefined;
+    const oasfSkills = Array.isArray(feedbackFile.oasfSkills) ? feedbackFile.oasfSkills : undefined;
+    const oasfDomains = Array.isArray(feedbackFile.oasfDomains) ? feedbackFile.oasfDomains : undefined;
 
     return {
       id,
@@ -557,16 +560,19 @@ export class FeedbackManager {
           ? (feedbackData.endpoint || undefined)
           : (typeof feedbackFile.endpoint === 'string' ? (feedbackFile.endpoint || undefined) : undefined),
       text: feedbackFile.text || undefined,
-      context,
       proofOfPayment,
       fileURI: feedbackData.feedbackURI || feedbackData.feedbackUri || undefined,
       createdAt: feedbackData.createdAt ? parseInt(feedbackData.createdAt, 10) : Math.floor(Date.now() / 1000),
       answers,
       isRevoked: feedbackData.isRevoked || false,
-      capability: feedbackFile.capability || undefined,
-      name: feedbackFile.name || undefined,
-      skill: feedbackFile.skill || undefined,
-      task: feedbackFile.task || undefined,
+      mcpTool: feedbackFile.mcpTool ?? undefined,
+      mcpPrompt: feedbackFile.mcpPrompt ?? undefined,
+      mcpResource: feedbackFile.mcpResource ?? undefined,
+      a2aSkills,
+      a2aContextId: feedbackFile.a2aContextId ?? undefined,
+      a2aTaskId: feedbackFile.a2aTaskId ?? undefined,
+      oasfSkills,
+      oasfDomains,
     };
   }
 

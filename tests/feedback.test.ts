@@ -198,8 +198,9 @@ describeMaybe('Agent Feedback Flow with IPFS Pin', () => {
 
       expect(feedback.value).toBe(feedbackData.value);
       expect(feedback.tags).toEqual(feedbackData.tags);
-      expect(feedback.capability).toBe(feedbackData.capability);
-      expect(feedback.skill).toBe(feedbackData.skill);
+      // Spec-aligned: legacy capability/skill are mapped to mcpTool/a2aSkills
+      expect(feedback.mcpTool).toBe(feedbackData.capability);
+      expect(feedback.a2aSkills).toEqual([feedbackData.skill]);
       expect(feedback.fileURI).toBeTruthy();
       clientFeedbackId = feedback.idString;
 
