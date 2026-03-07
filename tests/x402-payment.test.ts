@@ -20,7 +20,7 @@ function createMockChainClient(overrides?: Partial<ChainClient>): ChainClient {
   });
   return {
     chainId: CHAIN_ID,
-    rpcUrl: 'https://sepolia.base.org',
+    rpcUrl: 'https://base-sepolia.drpc.org',
     getAddress: jest.fn().mockResolvedValue(FROM),
     ensureAddress: jest.fn().mockResolvedValue(FROM),
     readContract,

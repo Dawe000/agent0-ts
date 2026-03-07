@@ -406,7 +406,6 @@ export function createTaskHandle(
             method: 'POST',
             headers: headers(),
             body: JSON.stringify(body),
-            alternateUrls: pathsToTry.slice(1),
             parseResponse: async (res) => {
               if (!res.ok) throw new Error(`A2A message failed: HTTP ${res.status}`);
               const data = (await res.json()) as Record<string, unknown>;
@@ -758,7 +757,6 @@ export async function sendMessage(
               headers: a2aHeaders(a2aVersion, resolvedAuth),
               body: JSON.stringify(body),
               payment: options?.payment,
-              alternateUrls: pathsToTry.filter((u) => u !== messageSendUrl),
               parseResponse: async (res) => {
                 if (!res.ok) throw new Error(`A2A request failed: HTTP ${res.status} ${res.statusText}`);
                 const data = await parseJsonResponse(res, messageSendUrl);

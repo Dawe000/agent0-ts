@@ -5,7 +5,7 @@
  */
 
 import type { X402Accept, X402Payment, X402RequestOptions, X402RequiredResponse, X402RequestResult } from './x402-types.js';
-import { parse402FromHeader } from './x402-types.js';
+import { parse402FromBody, parse402FromHeader, parse402FromWWWAuthenticate } from './x402-types.js';
 
 /** Snapshot of the original request so pay() can retry the same request with PAYMENT-SIGNATURE. */
 export interface RequestSnapshot {
@@ -49,14 +49,19 @@ export async function requestWithX402<T = Response>(
     body,
   };
 
-  /** x402 spec: V1 uses X-PAYMENT header; V2 uses PAYMENT-SIGNATURE. */
-  const doFetch = async (paymentPayload?: string, paymentHeaderName?: string): Promise<Response> => {
+  /** x402 spec: V1 uses X-PAYMENT header; V2 uses PAYMENT-SIGNATURE. Fetch to a given requestUrl (default snapshot.url). */
+  const doFetch = async (
+    paymentPayload?: string,
+    paymentHeaderName?: string,
+    requestUrl?: string
+  ): Promise<Response> => {
+    const targetUrl = requestUrl ?? snapshot.url;
     const reqHeaders: Record<string, string> = { ...snapshot.headers };
     if (paymentPayload !== undefined) {
       const headerName = paymentHeaderName ?? 'PAYMENT-SIGNATURE';
       reqHeaders[headerName] = paymentPayload;
     }
-    return deps.fetch(url, {
+    return deps.fetch(targetUrl, {
       method: snapshot.method,
       headers: reqHeaders,
       body: snapshot.body as RequestInit['body'],
@@ -67,10 +72,24 @@ export async function requestWithX402<T = Response>(
   let response = await doFetch(firstPayload);
 
   if (response.status === 402) {
-    // x402 spec: payment options only in PAYMENT-REQUIRED header (base64 JSON).
+    // x402 spec: payment requirements in header (PAYMENT-REQUIRED base64) or body (JSON). Fallback: WWW-Authenticate.
     const headerPayload =
       response.headers.get('payment-required') ?? response.headers.get('PAYMENT-REQUIRED');
-    const { accepts, x402Version } = parse402FromHeader(headerPayload);
+    let { accepts, x402Version } = parse402FromHeader(headerPayload);
+    let responseFromWWWAuthenticate = false;
+    if (accepts.length === 0) {
+      const wwwAuth = response.headers.get('www-authenticate') ?? response.headers.get('WWW-Authenticate');
+      const parsed = parse402FromWWWAuthenticate(wwwAuth);
+      accepts = parsed.accepts;
+      if (accepts.length > 0) responseFromWWWAuthenticate = true;
+      if (x402Version === undefined && parsed.x402Version !== undefined) x402Version = parsed.x402Version;
+    }
+    if (accepts.length === 0) {
+      const bodyText = await response.text();
+      const parsed = parse402FromBody(bodyText);
+      accepts = parsed.accepts;
+      if (x402Version === undefined && parsed.x402Version !== undefined) x402Version = parsed.x402Version;
+    }
     const singleAccept = accepts.length === 1 ? accepts[0]! : undefined;
 
     const x402Payment: X402Payment<T> = {
@@ -94,8 +113,25 @@ export async function requestWithX402<T = Response>(
           throw new Error('x402: no payment option selected (empty accepts or invalid index)');
         }
         const payload = await deps.buildPayment(chosen, { ...snapshot, x402Version });
-        const paymentHeaderName = x402Version === 1 ? 'X-PAYMENT' : 'PAYMENT-SIGNATURE';
-        const retryResponse = await doFetch(payload, paymentHeaderName);
+        // When server challenged with WWW-Authenticate: try Authorization: x402 <payload> first (RFC 7235); if 402 again, retry with PAYMENT-SIGNATURE (some servers expect spec header).
+        const paymentHeaderName = responseFromWWWAuthenticate
+          ? 'Authorization'
+          : (x402Version === 1 ? 'X-PAYMENT' : 'PAYMENT-SIGNATURE');
+        const paymentHeaderValue = responseFromWWWAuthenticate ? `x402 ${payload}` : payload;
+        const retryHeaders: Record<string, string> = { ...snapshot.headers, [paymentHeaderName]: paymentHeaderValue };
+
+        const tryUrl = async (requestUrl: string, useAuthHeader = true): Promise<Response> => {
+          if (responseFromWWWAuthenticate && !useAuthHeader) {
+            return doFetch(payload, 'PAYMENT-SIGNATURE', requestUrl);
+          }
+          return doFetch(paymentHeaderValue, paymentHeaderName, requestUrl);
+        };
+
+        let retryResponse = await tryUrl(snapshot.url);
+        // If we used WWW-Authenticate and server returned 402 again, retry with PAYMENT-SIGNATURE (same payload).
+        if (responseFromWWWAuthenticate && !retryResponse.ok && retryResponse.status === 402) {
+          retryResponse = await tryUrl(snapshot.url, false);
+        }
         if (!retryResponse.ok) {
           let body = '';
           try {
@@ -105,13 +141,37 @@ export async function requestWithX402<T = Response>(
           }
           const paymentRequired = retryResponse.headers.get('payment-required') ?? retryResponse.headers.get('PAYMENT-REQUIRED');
           const paymentResponse = retryResponse.headers.get('payment-response') ?? retryResponse.headers.get('PAYMENT-RESPONSE');
+          const responseHeaders: Record<string, string> = {};
+          retryResponse.headers.forEach((v, k) => {
+            responseHeaders[k] = v;
+          });
           const msg = retryResponse.status === 402
             ? 'x402: payment rejected or insufficient (server returned 402 again)'
             : `x402: retry failed with HTTP ${retryResponse.status}`;
-          const err = new Error(msg) as Error & { status?: number; body?: string; headers?: Record<string, string>; url?: string };
+          let requestBody = '';
+          if (snapshot.body !== undefined) {
+            if (typeof snapshot.body === 'string') requestBody = snapshot.body;
+            else if (snapshot.body instanceof ArrayBuffer) requestBody = new TextDecoder().decode(snapshot.body);
+            else if (snapshot.body instanceof Uint8Array) requestBody = new TextDecoder().decode(snapshot.body);
+          }
+          const err = new Error(msg) as Error & {
+            status?: number;
+            body?: string;
+            url?: string;
+            method?: string;
+            requestHeaders?: Record<string, string>;
+            requestBody?: string;
+            responseHeaders?: Record<string, string>;
+            /** @deprecated use responseHeaders */
+            headers?: Record<string, string>;
+          };
           err.status = retryResponse.status;
           err.body = body;
           err.url = snapshot.url;
+          err.method = snapshot.method;
+          err.requestHeaders = retryHeaders;
+          err.requestBody = requestBody;
+          err.responseHeaders = responseHeaders;
           err.headers = {
             ...(paymentRequired && { 'payment-required': paymentRequired }),
             ...(paymentResponse && { 'payment-response': paymentResponse }),

@@ -85,6 +85,11 @@ export interface SDKConfig {
    * XMTP network environment (default: 'dev').
    */
   xmtpEnv?: XmtpClientOptions['env'];
+  /**
+   * Optional RPC URLs for other chains when paying x402 on a different chain than `chainId`.
+   * Example: { 84532: 'https://base-sepolia.drpc.org' } so pay() can sign for Base Sepolia when the 402 accept is eip155:84532.
+   */
+  rpcUrls?: Record<number, string>;
 }
 
 /**
@@ -103,12 +108,17 @@ export class SDK {
   private _xmtpState?: XMTPClientWrapperState;
   private readonly _xmtpInstallationKeyFromConfig?: XMTPInstallationKey;
   private readonly _xmtpEnv?: XmtpClientOptions['env'];
+  private readonly _rpcUrls: Record<number, string>;
+  private readonly _paymentChainClients = new Map<number, ChainClient>();
+  private readonly _signerForPayment: { privateKey?: string; walletProvider?: Eip1193Provider };
 
   constructor(config: SDKConfig) {
     this._chainId = config.chainId;
+    this._rpcUrls = { [config.chainId]: config.rpcUrl, ...(config.rpcUrls ?? {}) };
+    const privateKey = config.privateKey ?? config.signer;
+    this._signerForPayment = { privateKey, walletProvider: config.walletProvider };
 
     // Initialize Chain client (viem-only)
-    const privateKey = config.privateKey ?? config.signer;
     this._hasSignerConfig = Boolean(privateKey || config.walletProvider);
     this._chainClient = new ViemChainClient({
       chainId: config.chainId,
@@ -242,6 +252,35 @@ export class SDK {
   }
 
   /**
+   * Return the chain client to use for building an x402 payment for the given accept.
+   * Uses the accept's network (e.g. eip155:84532) so the signature matches the chain the server verifies.
+   */
+  private getChainClientForAccept(accept: { network?: string; [key: string]: unknown }): ChainClient {
+    const raw = accept?.network ?? String(this._chainId);
+    const m = String(raw).match(/^eip155:(\d+)$/);
+    const chainId = m ? parseInt(m[1]!, 10) : parseInt(String(raw), 10);
+    if (Number.isNaN(chainId)) return this._chainClient;
+    if (chainId === this._chainId) return this._chainClient;
+    const cached = this._paymentChainClients.get(chainId);
+    if (cached) return cached;
+    const rpcUrl = this._rpcUrls[chainId];
+    if (!rpcUrl?.trim()) {
+      throw new Error(
+        `x402: payment option requires chain ${chainId} but SDK is configured for chain ${this._chainId}. ` +
+          `Add rpcUrls: { ${chainId}: 'https://...' } to SDK config to pay on that chain.`
+      );
+    }
+    const client = new ViemChainClient({
+      chainId,
+      rpcUrl: rpcUrl.trim(),
+      privateKey: this._signerForPayment.privateKey,
+      walletProvider: this._signerForPayment.walletProvider,
+    });
+    this._paymentChainClients.set(chainId, client);
+    return client;
+  }
+
+  /**
    * Perform an HTTP request with built-in x402 (402 Payment Required) handling.
    * On 2xx returns the parsed result; on 402 returns { x402Required: true, x402Payment } (no throw).
    * Use x402Payment.pay() to pay and retry. See docs/sdk-messaging-tasks-x402-spec.md §4.
@@ -249,7 +288,8 @@ export class SDK {
   async request<T = Response>(options: X402RequestOptions<T>): Promise<X402RequestResult<T>> {
     return requestWithX402(options, {
       fetch: globalThis.fetch,
-      buildPayment: (accept, snapshot) => buildEvmPayment(accept, this._chainClient, snapshot),
+      buildPayment: (accept, snapshot) =>
+        buildEvmPayment(accept, this.getChainClientForAccept(accept), snapshot),
     });
   }
 
@@ -786,7 +826,8 @@ export class SDK {
   getX402RequestDeps(): X402RequestDeps {
     return {
       fetch: globalThis.fetch,
-      buildPayment: (accept, snapshot) => buildEvmPayment(accept, this._chainClient, snapshot),
+      buildPayment: (accept, snapshot) =>
+        buildEvmPayment(accept, this.getChainClientForAccept(accept), snapshot),
     };
   }
 
@@ -921,7 +962,7 @@ export class SDK {
         const msgs = await dm.messages({ limit: options?.limit });
         return msgs.map((m) => ({
           id: m.id,
-          content: isText(m) ? (m.content as string) : (m.fallback ?? String(m.content ?? '')),
+          content: isText(m) ? (m.content as string) : ((m as { fallback?: string }).fallback ?? String(m.content ?? '')),
           senderInboxId: m.senderInboxId,
           sentAt: m.sentAt,
         }));

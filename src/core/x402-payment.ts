@@ -1,6 +1,10 @@
 /**
- * Build EVM x402 PAYMENT-SIGNATURE payload (EIP-3009 TransferWithAuthorization style).
+ * Build EVM x402 payment payload (EIP-3009 TransferWithAuthorization style).
  * Uses ChainClient only (no viem) to align with SDK conventions.
+ *
+ * Spec alignment (docs/x402v1.md, docs/x402v2.md):
+ * - V1: header X-PAYMENT, payload { x402Version: 1, scheme, network, payload }; network is human-readable (e.g. "base", "base-sepolia").
+ * - V2: header PAYMENT-SIGNATURE, payload { x402Version: 2, accepted, payload, extensions }; network is CAIP-2 (eip155:chainId).
  */
 
 import type { ChainClient } from './chain-client.js';
@@ -69,6 +73,29 @@ function destinationAddress(accept: X402Accept, chainClient: ChainClient): strin
 function valueAmount(accept: X402Accept): string {
   const v = accept.price ?? accept.maxAmountRequired ?? '0';
   return String(v);
+}
+
+/**
+ * x402 v1 spec §5.2: PaymentPayload.network must be a human-readable network identifier
+ * (e.g. "base-sepolia", "ethereum-mainnet"), not CAIP-2. Map CAIP-2 or chainId to v1 name.
+ */
+const V1_NETWORK_NAMES: Record<string, string> = {
+  'eip155:1': 'ethereum-mainnet',
+  'eip155:11155111': 'ethereum-sepolia',
+  'eip155:8453': 'base',
+  'eip155:84532': 'base-sepolia',
+  'eip155:43114': 'avalanche',
+  'eip155:43113': 'avalanche-fuji',
+  'eip155:4689': 'iotex',
+  'eip155:4690': 'iotex-testnet',
+};
+
+function toV1NetworkName(networkOrChainId: string | number): string {
+  const s = String(networkOrChainId);
+  if (V1_NETWORK_NAMES[s]) return V1_NETWORK_NAMES[s]!;
+  const caip = s.startsWith('eip155:') ? s : `eip155:${s}`;
+  if (V1_NETWORK_NAMES[caip]) return V1_NETWORK_NAMES[caip]!;
+  return s;
 }
 
 /**
@@ -184,6 +211,7 @@ export async function buildEvmPayment(
         signature,
         authorization: { from, to, value, validAfter, validBefore, nonce },
       },
+      extensions: {},
     };
     const json = JSON.stringify(payloadV2);
     const base64 = typeof Buffer !== 'undefined'
@@ -195,7 +223,7 @@ export async function buildEvmPayment(
   const payload = {
     x402Version: 1,
     scheme,
-    network: networkStr,
+    network: toV1NetworkName(networkStr),
     payload: {
       signature,
       authorization: { from, to, value, validAfter, validBefore, nonce },

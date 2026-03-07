@@ -147,6 +147,72 @@ export function parse402FromHeader(headerValue: string | null): Parse402FromHead
 }
 
 /**
+ * Parse WWW-Authenticate header with x402 challenge (e.g. 402payment-test.com).
+ * Format: x402 address="0x...", amount="0.01", chainId="8453", token="0x..."
+ * Returns a single accept; amount is converted to atomic units if it looks like a decimal (USDC 6 decimals).
+ */
+export function parse402FromWWWAuthenticate(headerValue: string | null): Parse402FromHeaderResult {
+  if (!headerValue || typeof headerValue !== 'string') return { accepts: [] };
+  const x402Match = headerValue.match(/\bx402\s+(.+)/i);
+  if (!x402Match) return { accepts: [] };
+  const rest = x402Match[1]!;
+  const pairs: Record<string, string> = {};
+  const re = /(\w+)\s*=\s*([^\s,]+|"[^"]*")/g;
+  let m;
+  while ((m = re.exec(rest)) !== null) {
+    const key = m[1]!.toLowerCase();
+    let val = m[2]!;
+    if (val.startsWith('"') && val.endsWith('"')) val = val.slice(1, -1);
+    pairs[key] = val;
+  }
+  const address = pairs.address ?? pairs.payto;
+  const amount = pairs.amount ?? '0';
+  const chainId = pairs.chainid ?? pairs.chain_id ?? '';
+  const token = pairs.token ?? pairs.asset ?? '';
+  if (!address || !token) return { accepts: [] };
+  // If amount looks like decimal (e.g. "0.01"), assume USDC 6 decimals for atomic units
+  let price = amount;
+  if (/^\d*\.\d+$/.test(amount)) {
+    const n = parseFloat(amount);
+    if (Number.isFinite(n)) price = String(Math.round(n * 1e6));
+  }
+  const networkStr = chainId ? (chainId.includes(':') ? chainId : `eip155:${chainId}`) : undefined;
+  const accept: X402Accept = {
+    price,
+    token,
+    destination: address,
+    payTo: address,
+    network: networkStr,
+    scheme: 'exact',
+  };
+  // Servers that advertise chainId (e.g. 402payment-test.com) often expect v2 (PAYMENT-SIGNATURE + CAIP-2).
+  const x402Version = networkStr && /^eip155:\d+$/.test(networkStr) ? 2 : 1;
+  return { accepts: [accept], x402Version };
+}
+
+/**
+ * Parse 402 response body (JSON with accepts array). Used when server sends payment options in body (e.g. httpay.xyz).
+ * Returns accepts and x402Version when present.
+ */
+export function parse402FromBody(bodyText: string | null): Parse402FromHeaderResult {
+  if (!bodyText || typeof bodyText !== 'string') return { accepts: [] };
+  try {
+    const json = JSON.parse(bodyText.trim()) as Record<string, unknown>;
+    if (json == null || typeof json !== 'object') return { accepts: [] };
+    const list = json.accepts;
+    const accepts = Array.isArray(list)
+      ? list
+          .filter((e): e is Record<string, unknown> => typeof e === 'object' && e !== null)
+          .map(normalizeAcceptEntry)
+      : [];
+    const x402Version = typeof json.x402Version === 'number' ? json.x402Version : undefined;
+    return { accepts, x402Version };
+  } catch {
+    return { accepts: [] };
+  }
+}
+
+/**
  * Parse PAYMENT-REQUIRED header (x402 spec: base64-encoded JSON with accepts array).
  * Server sends payment options in header; body may be empty. Returns [] if header missing/invalid.
  */
