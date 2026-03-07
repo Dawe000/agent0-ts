@@ -39,25 +39,23 @@ async function main(): Promise<void> {
   const sdkAlice = new SDK({ chainId: CHAIN_ID, rpcUrl, privateKey: keyAlice });
   const sdkBob = new SDK({ chainId: CHAIN_ID, rpcUrl, privateKey: keyBob });
 
+  // Alice must have a registered inbox first so she can receive; Bob auto-registers when he sends
   await sdkAlice.registerXMTPInbox();
-  await sdkBob.registerXMTPInbox();
+  // await sdkBob.registerXMTPInbox();
 
-  // Installation key: identifies this inbox. You need to keep it between runs and pass it via
-  // SDK config (xmtpInstallationKey) or loadXMTPInbox(key) to reuse the same inbox; otherwise
-  // each run registers a new inbox and you can hit XMTP's per-wallet installation limit.
+  const aliceAddress = sdkAlice.getXMTPInboxInfo()!.walletAddress;
+  const bobAddress = (await sdkBob.chainClient.getAddress())!;
+  console.log('Alice wallet:', aliceAddress);
+  console.log('Bob wallet:', bobAddress);
+
+  // Bob sends first (auto-registers his inbox), then Alice sends. Same 1:1 conversation.
+  await sdkBob.messageXMTP(aliceAddress, 'Hello from Bob');
+  await sdkAlice.messageXMTP(bobAddress, 'Hello from Alice');
+
   const installKeyAlice = sdkAlice.getXMTPInstallationKey();
   const installKeyBob = sdkBob.getXMTPInstallationKey();
   console.log('Alice installation key:', installKeyAlice);
   console.log('Bob installation key:', installKeyBob);
-
-  const aliceAddress = sdkAlice.getXMTPInboxInfo()!.walletAddress;
-  const bobAddress = sdkBob.getXMTPInboxInfo()!.walletAddress;
-  console.log('Alice wallet:', aliceAddress);
-  console.log('Bob wallet:', bobAddress);
-
-  // Same conversation: Alice opens DM with Bob, Bob opens DM with Alice (same 1:1 thread)
-  await sdkAlice.messageXMTP(bobAddress, 'Hello from Alice');
-  await sdkBob.messageXMTP(aliceAddress, 'Hello from Bob');
 
   await new Promise((r) => setTimeout(r, 2000));
 
@@ -73,6 +71,11 @@ async function main(): Promise<void> {
 
   console.log('\nConversation history (Bob\'s view):');
   console.log(JSON.stringify(bobView, null, 2));
+
+  // Expose installation keys (pass xmtpInstallationKey in SDK config or loadXMTPInbox(key) to reuse these inboxes)
+  console.log('\nInstallation keys:');
+  console.log('  Alice:', installKeyAlice);
+  console.log('  Bob:  ', installKeyBob);
 }
 
 main().catch(console.error);
