@@ -110,8 +110,8 @@ describeMaybe('SDK with telemetry (apiKey + telemetryEndpoint)', () => {
       emitted = true;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (msg.includes('Data URIs are not supported')) {
-        // Test agent may use data: URI for registration; SDK only loads HTTP/IPFS
+      // Skip if test agent uses data: URI that we don't support or that is malformed
+      if (msg.includes('Data URIs are not supported') || msg.includes('Invalid base64 payload in data URI')) {
         return;
       }
       throw e;
@@ -145,7 +145,7 @@ describeMaybe('SDK with telemetry (apiKey + telemetryEndpoint)', () => {
       loadAgentEmitted = true;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (!msg.includes('Data URIs are not supported')) throw e;
+      if (!msg.includes('Data URIs are not supported') && !msg.includes('Invalid base64 payload in data URI')) throw e;
     }
     await sdk.searchFeedback({ agentId: AGENT_ID });
     await sdk.getReputationSummary(AGENT_ID);

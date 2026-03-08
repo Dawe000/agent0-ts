@@ -585,10 +585,15 @@ export class SDK {
           hasText: feedbackFile?.text != null,
           hasContext: feedbackFile?.context != null,
           hasProofOfPayment: feedbackFile?.proofOfPayment != null,
-          capability: feedbackFile?.capability,
-          name: feedbackFile?.name,
-          skill: feedbackFile?.skill,
-          task: feedbackFile?.task,
+          // Spec-aligned feedback file fields (1.6+)
+          mcpTool: feedbackFile?.mcpTool,
+          mcpPrompt: feedbackFile?.mcpPrompt,
+          mcpResource: feedbackFile?.mcpResource,
+          a2aSkills: feedbackFile?.a2aSkills,
+          a2aContextId: feedbackFile?.a2aContextId,
+          a2aTaskId: feedbackFile?.a2aTaskId,
+          oasfSkills: feedbackFile?.oasfSkills,
+          oasfDomains: feedbackFile?.oasfDomains,
         },
       });
       return result;
