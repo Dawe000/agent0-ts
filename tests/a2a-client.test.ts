@@ -14,13 +14,16 @@ import {
   getTask,
   normalizeInterfaces,
   pickInterface,
+  resolveA2aFromEndpointUrl,
 } from '../src/core/a2a-client.js';
 import type { NormalizedInterface } from '../src/core/a2a-client.js';
 import type { X402RequestDeps } from '../src/core/x402-request.js';
 import type { RegistrationFile } from '../src/models/interfaces.js';
 import { EndpointType, TrustModel } from '../src/models/enums.js';
 import { Agent } from '../src/core/agent.js';
-import type { SDK } from '../src/core/sdk.js';
+import { SDK } from '../src/core/sdk.js';
+import { A2AClientFromSummary } from '../src/core/a2a-summary-client.js';
+import type { AgentSummary } from '../src/models/interfaces.js';
 
 function mockResponse(init: {
   status: number;
@@ -1497,5 +1500,134 @@ describe('Agent.messageA2A', () => {
 
     expect(fetchSpy).toHaveBeenNthCalledWith(1, cardUrl, expect.any(Object));
     expect((fetchSpy.mock.calls[1] as any)[0]).toMatch(new RegExp(`^${overrideBase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+  });
+});
+
+describe('resolveA2aFromEndpointUrl', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('fetches card URL and returns baseUrl, version, binding, auth from card', async () => {
+    const cardUrl = 'https://a2a.example.com/.well-known/agent-card.json';
+    const baseUrl = 'https://a2a.example.com';
+    const cardBody = {
+      supportedInterfaces: [{ url: baseUrl + '/', protocolBinding: 'HTTP+JSON', protocolVersion: '0.3' }],
+      securitySchemes: { apiKey: { type: 'apiKey', in: 'header', name: 'X-API-Key' } },
+      security: [{ apiKey: [] }],
+    };
+    jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      mockResponse({ status: 200, body: cardBody })
+    );
+
+    const resolved = await resolveA2aFromEndpointUrl(cardUrl);
+
+    expect(resolved.baseUrl).toBe(baseUrl);
+    expect(resolved.a2aVersion).toBe('0.3');
+    expect(resolved.binding).toBe('HTTP+JSON');
+    expect(resolved.auth?.securitySchemes).toEqual(cardBody.securitySchemes);
+    expect(resolved.auth?.security).toEqual(cardBody.security);
+  });
+
+  it('throws when URL is not http(s)', async () => {
+    await expect(resolveA2aFromEndpointUrl('')).rejects.toThrow('A2A endpoint URL must be http or https');
+    await expect(resolveA2aFromEndpointUrl('ftp://x.co/card.json')).rejects.toThrow('A2A endpoint URL must be http or https');
+  });
+});
+
+describe('createA2AClient / A2AClientFromSummary', () => {
+  const mockSdk = { getX402RequestDeps: undefined as undefined | (() => X402RequestDeps) };
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('createA2AClient(agent) returns the same agent reference', () => {
+    const sdk = new SDK({ chainId: 84532, rpcUrl: 'https://base-sepolia.drpc.org' });
+    const regFile: RegistrationFile = {
+      name: 'Test',
+      description: 'Test',
+      endpoints: [{ type: EndpointType.A2A, value: 'https://a2a.example.com/card.json', meta: { version: '0.3' } }],
+      trustModels: [],
+      owners: [],
+      operators: [],
+      active: true,
+      x402support: false,
+      metadata: {},
+      updatedAt: 0,
+    };
+    const agent = new Agent(sdk, regFile);
+    const client = sdk.createA2AClient(agent);
+    expect(client).toBe(agent);
+  });
+
+  it('A2AClientFromSummary fetches card on first messageA2A and delegates to sendMessage', async () => {
+    const cardUrl = 'https://a2a.example.com/.well-known/agent-card.json';
+    const baseUrl = 'https://a2a.example.com';
+    const cardBody = {
+      supportedInterfaces: [{ url: baseUrl + '/', protocolBinding: 'HTTP+JSON', protocolVersion: '0.3' }],
+    };
+    const messageBody = { message: { content: 'OK', contextId: 'c1' } };
+    const fetchSpy = jest
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(mockResponse({ status: 200, body: cardBody }))
+      .mockResolvedValueOnce(mockResponse({ status: 200, body: messageBody }));
+
+    const summary: AgentSummary = {
+      chainId: 84532,
+      agentId: '84532:1298',
+      name: 'Test Agent',
+      description: 'Test',
+      a2a: cardUrl,
+      owners: [],
+      operators: [],
+      supportedTrusts: [],
+      a2aSkills: [],
+      mcpTools: [],
+      mcpPrompts: [],
+      mcpResources: [],
+      oasfSkills: [],
+      oasfDomains: [],
+      active: true,
+      x402support: false,
+      extras: {},
+    };
+    const client = new A2AClientFromSummary(mockSdk, summary);
+    const result = await client.messageA2A('ping');
+
+    expect(fetchSpy).toHaveBeenNthCalledWith(1, cardUrl, expect.any(Object));
+    expect(fetchSpy).toHaveBeenNthCalledWith(
+      2,
+      `${baseUrl}/v1/message:send`,
+      expect.objectContaining({ method: 'POST' })
+    );
+    expect('x402Required' in result).toBe(false);
+    if (!('x402Required' in result) && !('task' in result)) {
+      expect(result.content).toBe('OK');
+      expect(result.contextId).toBe('c1');
+    }
+  });
+
+  it('A2AClientFromSummary throws when summary has no A2A endpoint', async () => {
+    const summary: AgentSummary = {
+      chainId: 84532,
+      agentId: '84532:1',
+      name: 'No A2A',
+      description: 'Test',
+      owners: [],
+      operators: [],
+      supportedTrusts: [],
+      a2aSkills: [],
+      mcpTools: [],
+      mcpPrompts: [],
+      mcpResources: [],
+      oasfSkills: [],
+      oasfDomains: [],
+      active: true,
+      x402support: false,
+      extras: {},
+    };
+    const client = new A2AClientFromSummary(mockSdk, summary);
+    await expect(client.messageA2A('hi')).rejects.toThrow('Agent summary has no A2A endpoint');
   });
 });

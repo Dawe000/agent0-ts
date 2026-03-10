@@ -25,6 +25,7 @@ import { SubgraphClient } from './subgraph-client.js';
 import { FeedbackManager } from './feedback-manager.js';
 import { AgentIndexer } from './indexer.js';
 import { Agent } from './agent.js';
+import { A2AClientFromSummary } from './a2a-summary-client.js';
 import type { TransactionHandle } from './transaction-handle.js';
 import {
   DEFAULT_REGISTRIES,
@@ -482,6 +483,19 @@ export class SDK {
     options: SearchOptions = {}
   ): Promise<AgentSummary[]> {
     return this._indexer.searchAgents(filters, options);
+  }
+
+  /**
+   * Create an A2A client from a loaded Agent or an AgentSummary.
+   * When given an Agent, returns it as-is (Agent already has messageA2A, listTasks, loadTask).
+   * When given an AgentSummary, returns an A2AClientFromSummary that resolves the agent card from summary.a2a on first use.
+   * Use this to treat agents and summaries interchangeably for A2A.
+   */
+  createA2AClient(agentOrSummary: Agent | AgentSummary): Agent | A2AClientFromSummary {
+    if (agentOrSummary instanceof Agent) {
+      return agentOrSummary;
+    }
+    return new A2AClientFromSummary(this, agentOrSummary);
   }
 
   /**

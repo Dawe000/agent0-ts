@@ -115,6 +115,127 @@ export function pickInterface(
   })[0] ?? null;
 }
 
+/**
+ * Resolved A2A interface from an endpoint URL (agent card fetch + pickInterface + auth from card).
+ * Used by A2AClientFromSummary and by tests.
+ */
+export interface ResolvedA2A {
+  baseUrl: string;
+  a2aVersion: string;
+  binding: NormalizedInterface['binding'];
+  tenant?: string;
+  auth?: AgentCardAuth;
+}
+
+/**
+ * Resolve A2A interface from an endpoint URL: fetch agent card, pick interface, extract auth from card.
+ * Discovery: if URL looks like a card path, fetch it; else try /.well-known/agent-card.json and agent.json.
+ */
+export async function resolveA2aFromEndpointUrl(url: string): Promise<ResolvedA2A> {
+  if (!url || (!url.startsWith('http://') && !url.startsWith('https://'))) {
+    throw new Error('A2A endpoint URL must be http or https');
+  }
+  let data: Record<string, unknown> | null = null;
+  const pathname = new URL(url).pathname || '';
+  const looksLikeCardUrl = /\/(\.well-known\/)?(agent-card|agent)\.json$/i.test(pathname);
+
+  if (looksLikeCardUrl) {
+    const res = await fetch(url, { signal: AbortSignal.timeout(5000), redirect: 'follow' });
+    if (!res.ok) throw new Error(`Failed to fetch agent card: HTTP ${res.status}`);
+    data = (await res.json()) as Record<string, unknown>;
+  } else {
+    const base = url.replace(/\/+$/, '');
+    const cardPaths = ['/.well-known/agent-card.json', '/.well-known/agent.json'];
+    for (const p of cardPaths) {
+      const res = await fetch(`${base}${p}`, { signal: AbortSignal.timeout(5000), redirect: 'follow' });
+      if (res.ok) {
+        data = (await res.json()) as Record<string, unknown>;
+        break;
+      }
+      if (res.status !== 404) throw new Error(`Failed to fetch agent card: HTTP ${res.status}`);
+    }
+  }
+
+  if (!data) {
+    throw new Error('Could not load agent card from A2A endpoint');
+  }
+
+  const defaultVersion = '0.3';
+  let baseUrl = '';
+  let a2aVersion = defaultVersion;
+  let binding: NormalizedInterface['binding'] = 'AUTO';
+  let tenant: string | undefined;
+
+  const interfaces = normalizeInterfaces(data);
+  const chosen = pickInterface(interfaces, ['HTTP+JSON', 'JSONRPC']);
+  if (chosen) {
+    baseUrl = chosen.url;
+    a2aVersion = chosen.version ?? defaultVersion;
+    binding = chosen.binding;
+    tenant = chosen.tenant;
+  } else {
+    const fromInterface =
+      Array.isArray(data.supportedInterfaces) && data.supportedInterfaces.length > 0
+        ? (data.supportedInterfaces[0] as Record<string, unknown>)?.url
+        : undefined;
+    const fromAdditional =
+      Array.isArray(data.additionalInterfaces) && data.additionalInterfaces.length > 0
+        ? (data.additionalInterfaces[0] as Record<string, unknown>)?.url
+        : undefined;
+    const urlStr =
+      (typeof fromInterface === 'string' ? fromInterface : undefined) ??
+      (typeof data.url === 'string' ? data.url : undefined) ??
+      (typeof fromAdditional === 'string' ? fromAdditional : undefined);
+    if (urlStr && (urlStr.startsWith('http://') || urlStr.startsWith('https://'))) {
+      baseUrl = urlStr.replace(/\/$/, '');
+    }
+    if (!baseUrl) {
+      try {
+        const u = new URL(url);
+        let pathname = u.pathname;
+        if (/\/(\.well-known\/)?(agent-card|agent)\.json$/i.test(pathname)) {
+          pathname = pathname.replace(/\/(\.well-known\/)?(agent-card|agent)\.json$/i, '') || '/';
+        }
+        if (!pathname || pathname === '/') pathname = '';
+        u.pathname = pathname;
+        u.search = '';
+        u.hash = '';
+        baseUrl = u.toString().replace(/\/$/, '');
+      } catch {
+        throw new Error('Could not derive A2A base URL from agent card');
+      }
+    }
+    const versionFromInterface =
+      Array.isArray(data.supportedInterfaces) && data.supportedInterfaces.length > 0
+        ? (data.supportedInterfaces[0] as Record<string, unknown>)?.protocolVersion
+        : undefined;
+    const versionFromAdditional =
+      Array.isArray(data.additionalInterfaces) && data.additionalInterfaces.length > 0
+        ? (data.additionalInterfaces[0] as Record<string, unknown>)?.protocolVersion
+        : undefined;
+    const version =
+      (typeof versionFromInterface === 'string' ? versionFromInterface : undefined) ??
+      (typeof versionFromAdditional === 'string' ? versionFromAdditional : undefined) ??
+      (typeof data.protocolVersion === 'string' ? data.protocolVersion : undefined) ??
+      (typeof data.version === 'string' ? data.version : undefined);
+    if (version) a2aVersion = version;
+  }
+
+  let auth: AgentCardAuth | undefined;
+  const schemes = data.securitySchemes;
+  const security = data.security;
+  const hasSchemes =
+    schemes && typeof schemes === 'object' && !Array.isArray(schemes) && Object.keys(schemes).length > 0;
+  const hasSecurity = Array.isArray(security) && security.length > 0;
+  if (hasSchemes || hasSecurity) {
+    auth = {};
+    if (hasSchemes) auth.securitySchemes = schemes as AgentCardAuth['securitySchemes'];
+    if (hasSecurity) auth.security = security as AgentCardAuth['security'];
+  }
+
+  return { baseUrl, a2aVersion, binding, tenant, auth };
+}
+
 export interface A2AAuth {
   headers: Record<string, string>;
   queryParams: Record<string, string>;

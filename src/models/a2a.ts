@@ -145,3 +145,25 @@ export interface TaskResponse {
   /** Optional task snapshot from send response */
   status?: TaskState;
 }
+
+/** Options for loadTask (credential, payment). */
+export interface LoadTaskOptions {
+  credential?: string | CredentialObject;
+  payment?: string;
+}
+
+/**
+ * Interface for A2A-capable clients. Implemented by Agent and A2AClientFromSummary
+ * so that loaded agents and agent summaries can be used interchangeably for A2A.
+ */
+export interface A2AClient {
+  messageA2A(
+    content: string | { parts: Part[] },
+    options?: MessageA2AOptions
+  ): Promise<MessageResponse | TaskResponse | A2APaymentRequired<MessageResponse | TaskResponse>>;
+  listTasks(options?: ListTasksOptions): Promise<TaskSummary[] | A2APaymentRequired<TaskSummary[]>>;
+  loadTask(
+    taskId: string,
+    options?: LoadTaskOptions
+  ): Promise<AgentTask | A2APaymentRequired<AgentTask>>;
+}

@@ -13,6 +13,7 @@ import { spawn } from 'child_process';
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { SDK } from '../src/index.js';
+import type { AgentSummary } from '../src/models/interfaces.js';
 
 const ANVIL_PORT = 8546;
 const RPC_URL = `http://127.0.0.1:${ANVIL_PORT}`;
@@ -221,4 +222,45 @@ describeAnvil('A2A Anvil integration (real chain + A2A 402 + pay())', () => {
       expect(cancelResult.status).toEqual({ state: 'canceled' });
     }
   }, 25000);
+
+  it('createA2AClient(summary) messageA2A → 402 → pay() with real buildEvmPayment → 200', async () => {
+    const sdk = new SDK({
+      chainId: CHAIN_ID,
+      rpcUrl: RPC_URL,
+      privateKey: ANVIL_ACCOUNT_0_PRIVATE_KEY,
+    });
+
+    const summary: AgentSummary = {
+      chainId: CHAIN_ID,
+      agentId: `${CHAIN_ID}:0`,
+      name: 'Test Agent',
+      description: 'Test',
+      a2a: baseUrl,
+      owners: [],
+      operators: [],
+      supportedTrusts: [],
+      a2aSkills: [],
+      mcpTools: [],
+      mcpPrompts: [],
+      mcpResources: [],
+      oasfSkills: [],
+      oasfDomains: [],
+      active: true,
+      x402support: false,
+      extras: {},
+    };
+    const client = sdk.createA2AClient(summary);
+    const result = await client.messageA2A('hello');
+
+    expect('x402Required' in result && result.x402Required).toBe(true);
+    if (!('x402Required' in result) || !result.x402Required) return;
+
+    const paid = await result.x402Payment.pay();
+    expect('x402Required' in paid).toBe(false);
+    expect('task' in paid).toBe(false);
+    if (!('task' in paid)) {
+      expect(paid.content).toContain('Echo: hello');
+      expect(paid.contextId).toBeDefined();
+    }
+  }, 20000);
 });

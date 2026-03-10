@@ -49,13 +49,16 @@ async function runPureX402(sdk: SDK): Promise<void> {
 /**
  * Flow 2 — Pure A2A: send a message; if the server creates a task we query it, send a follow-up, and cancel.
  * Then list tasks and, if any, load the first and query it.
+ * Uses createA2AClient so the same code works with either a loaded Agent or an AgentSummary.
  */
 async function runPureA2A(sdk: SDK): Promise<void> {
   console.log('\n--- 2. Pure A2A ---');
 
+  // Use loaded agent; could instead use summary: const summary = await sdk.getAgent('84532:1298'); client = sdk.createA2AClient(summary!);
   const agent = await sdk.loadAgent('84532:1298');
+  const client = sdk.createA2AClient(agent);
 
-  const msg = (await agent.messageA2A('Hello, this is a demo message.')) as MessageResponse | TaskResponse;
+  const msg = (await client.messageA2A('Hello, this is a demo message.')) as MessageResponse | TaskResponse;
   console.log('messageA2A:', JSON.stringify(msg, null, 2));
 
   if ('task' in msg) {
@@ -65,10 +68,10 @@ async function runPureA2A(sdk: SDK): Promise<void> {
     console.log('task.cancel():', JSON.stringify(await task.cancel(), null, 2));
   }
 
-  const tasks = (await agent.listTasks()) as TaskSummary[];
+  const tasks = (await client.listTasks()) as TaskSummary[];
   console.log('listTasks:', JSON.stringify(tasks, null, 2));
   if (tasks.length > 0) {
-    const task = (await agent.loadTask(tasks[0]!.taskId)) as AgentTask;
+    const task = (await client.loadTask(tasks[0]!.taskId)) as AgentTask;
     console.log('loadTask + query():', JSON.stringify(await task.query(), null, 2));
   }
 }
@@ -81,8 +84,9 @@ async function runA2AWithX402(sdk: SDK): Promise<void> {
   console.log('\n--- 3. A2A with x402 ---');
 
   const agent = await sdk.loadAgent('84532:1301');
+  const client = sdk.createA2AClient(agent);
 
-  const result = await agent.messageA2A('Hello, please charge me once.');
+  const result = await client.messageA2A('Hello, please charge me once.');
   if (!result.x402Required) {
     console.log(JSON.stringify(result, null, 2));
     return;

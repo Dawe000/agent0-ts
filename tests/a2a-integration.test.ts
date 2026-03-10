@@ -6,10 +6,12 @@
  */
 
 import { spawn } from 'child_process';
-import type { RegistrationFile } from '../src/models/interfaces.js';
+import type { RegistrationFile, AgentSummary } from '../src/models/interfaces.js';
 import { EndpointType, TrustModel } from '../src/models/enums.js';
 import { Agent } from '../src/core/agent.js';
 import type { SDK } from '../src/core/sdk.js';
+import { A2AClientFromSummary } from '../src/core/a2a-summary-client.js';
+import type { A2AClient } from '../src/models/a2a.js';
 
 const INTEGRATION_PORT = 4030;
 const INTEGRATION_402_PORT = 4031;
@@ -78,6 +80,40 @@ function makeAgentWithA2AEndpoint(baseUrl: string, buildPayment?: () => Promise<
     }),
   } as unknown as SDK;
   return new Agent(stubSdk, regFile);
+}
+
+function makeClientFromSummary(
+  baseUrl: string,
+  buildPayment?: () => Promise<string>
+): A2AClient {
+  const stubSdk = {
+    getX402RequestDeps: () => ({
+      fetch: globalThis.fetch,
+      buildPayment: buildPayment ?? (async () => {
+        throw new Error('402 not expected in this test');
+      }),
+    }),
+  };
+  const summary: AgentSummary = {
+    chainId: 1,
+    agentId: '1:0',
+    name: 'Integration Test Agent',
+    description: 'Test',
+    a2a: baseUrl,
+    owners: [],
+    operators: [],
+    supportedTrusts: [],
+    a2aSkills: [],
+    mcpTools: [],
+    mcpPrompts: [],
+    mcpResources: [],
+    oasfSkills: [],
+    oasfDomains: [],
+    active: true,
+    x402support: false,
+    extras: {},
+  };
+  return new A2AClientFromSummary(stubSdk, summary);
 }
 
 const runIntegration = process.env.RUN_A2A_INTEGRATION === '1';
@@ -174,6 +210,47 @@ describeIntegration('A2A integration (server)', () => {
       }
     }
   }, 15000);
+
+  it('messageA2A via A2AClientFromSummary (summary.a2a) returns message response', async () => {
+    const client = makeClientFromSummary(BASE_URL);
+    const result = await client.messageA2A('hello');
+
+    expect('x402Required' in result && result.x402Required).toBe(false);
+    expect('task' in result).toBe(false);
+    if (!('task' in result) && !('x402Required' in result)) {
+      expect(result.content).toContain('Echo: hello');
+      expect(result.contextId).toBeDefined();
+    }
+  }, 10000);
+
+  it('listTasks and loadTask via A2AClientFromSummary work', async () => {
+    const client = makeClientFromSummary(BASE_URL);
+    const result = await client.messageA2A('create task');
+
+    expect('task' in result).toBe(true);
+    if (!('task' in result)) return;
+    const { taskId, contextId } = result;
+
+    const list = await client.listTasks();
+    expect(Array.isArray(list)).toBe(true);
+    const tasks = list as import('../src/models/a2a.js').TaskSummary[];
+    expect(tasks.length).toBeGreaterThanOrEqual(1);
+    const found = tasks.find((t) => t.taskId === taskId);
+    expect(found).toBeDefined();
+    expect(found!.contextId).toBe(contextId);
+
+    const loaded = await client.loadTask(taskId);
+    expect('x402Required' in loaded).toBe(false);
+    if (!('x402Required' in loaded)) {
+      expect(loaded.taskId).toBe(taskId);
+      expect(loaded.contextId).toBe(contextId);
+      const queryResult = await loaded.query();
+      expect('x402Required' in queryResult).toBe(false);
+      if (!('x402Required' in queryResult)) {
+        expect(queryResult.taskId).toBe(taskId);
+      }
+    }
+  }, 15000);
 });
 
 describeIntegration('A2A integration (server with 402)', () => {
@@ -221,6 +298,22 @@ describeIntegration('A2A integration (server with 402)', () => {
     if (!('task' in result) && !('x402Required' in result)) {
       expect(result.content).toContain('Echo: hello');
       expect(result.contextId).toBeDefined();
+    }
+  }, 10000);
+
+  it('messageA2A via A2AClientFromSummary → 402 → pay() → 200', async () => {
+    const client = makeClientFromSummary(BASE_URL_402, async () => VALID_PAYLOAD_402);
+    const result = await client.messageA2A('hello');
+
+    expect('x402Required' in result && result.x402Required).toBe(true);
+    if (!('x402Required' in result) || !result.x402Required) return;
+
+    const paid = await result.x402Payment.pay();
+    expect('x402Required' in paid).toBe(false);
+    expect('task' in paid).toBe(false);
+    if (!('task' in paid)) {
+      expect(paid.content).toContain('Echo: hello');
+      expect(paid.contextId).toBeDefined();
     }
   }, 10000);
 });
@@ -304,6 +397,33 @@ describeIntegration('A2A integration (server with 402 on message and tasks)', ()
       expect(paidCancel.status).toEqual({ state: 'canceled' });
     }
   }, 25000);
+
+  it('A2AClientFromSummary: messageA2A → 402 → pay() → task, then listTasks/loadTask 402 → pay()', async () => {
+    const client = makeClientFromSummary(BASE_URL_402_TASKS, async () => VALID_PAYLOAD_402);
+
+    const sendResult = await client.messageA2A('create task');
+    expect('x402Required' in sendResult && sendResult.x402Required).toBe(true);
+    if (!('x402Required' in sendResult) || !sendResult.x402Required) return;
+    const paidSend = await sendResult.x402Payment.pay();
+    expect('task' in paidSend).toBe(true);
+    if (!('task' in paidSend)) return;
+    const { taskId, contextId } = paidSend;
+
+    const listResult = await client.listTasks();
+    expect('x402Required' in listResult && listResult.x402Required).toBe(true);
+    if (!('x402Required' in listResult) || !listResult.x402Required) return;
+    const paidList = await listResult.x402Payment.pay();
+    expect(Array.isArray(paidList)).toBe(true);
+    expect((paidList as import('../src/models/a2a.js').TaskSummary[]).some((t) => t.taskId === taskId)).toBe(true);
+
+    const loadResult = await client.loadTask(taskId);
+    expect('x402Required' in loadResult && loadResult.x402Required).toBe(true);
+    if (!('x402Required' in loadResult) || !loadResult.x402Required) return;
+    const paidLoad = await loadResult.x402Payment.pay();
+    expect('x402Required' in paidLoad).toBe(false);
+    expect(paidLoad.taskId).toBe(taskId);
+    expect(paidLoad.contextId).toBe(contextId);
+  }, 25000);
 });
 
 describeIntegration('A2A integration (server with auth)', () => {
@@ -374,5 +494,17 @@ describeIntegration('A2A integration (server with auth)', () => {
     };
 
     await expect(agent.messageA2A('hello')).rejects.toThrow(/401/);
+  }, 10000);
+
+  it('messageA2A with credential via A2AClientFromSummary succeeds when card has securitySchemes', async () => {
+    const client = makeClientFromSummary(BASE_URL_AUTH);
+    const result = await client.messageA2A('hello', { credential: AUTH_EXPECTED_KEY });
+
+    expect('x402Required' in result && result.x402Required).toBe(false);
+    expect('task' in result).toBe(false);
+    if (!('task' in result) && !('x402Required' in result)) {
+      expect(result.content).toContain('Echo: hello');
+      expect(result.contextId).toBeDefined();
+    }
   }, 10000);
 });
