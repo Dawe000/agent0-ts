@@ -94,11 +94,13 @@ export class SDK {
   private readonly _feedbackManager: FeedbackManager;
   private readonly _indexer: AgentIndexer;
   private readonly _registries: Record<string, Address>;
+  private readonly _registryOverrides: Record<ChainId, Record<string, Address>>;
   private readonly _chainId: ChainId;
   private readonly _subgraphUrls: Record<ChainId, string> = {};
   private readonly _hasSignerConfig: boolean;
   private readonly _rpcUrls: Record<number, string>;
   private readonly _paymentChainClients = new Map<number, ChainClient>();
+  private readonly _readOnlyChainClients = new Map<number, ChainClient>();
   private readonly _signerForPayment: { privateKey?: string; walletProvider?: Eip1193Provider };
   private readonly _registrationDataUriMaxBytes: number;
 
@@ -135,6 +137,7 @@ export class SDK {
 
     // Resolve registry addresses
     const registryOverrides = config.registryOverrides || {};
+    this._registryOverrides = registryOverrides;
     const defaultRegistries = DEFAULT_REGISTRIES[config.chainId] || {};
     this._registries = { ...defaultRegistries, ...(registryOverrides[config.chainId] || {}) };
 
@@ -329,6 +332,43 @@ export class SDK {
   }
 
   /**
+   * Get a chain client for the given chain (for reads, e.g. loadAgent or getWallet on another chain).
+   * Returns the SDK's main chain client when chainId matches; otherwise a read-only cached client.
+   */
+  getChainClientForChain(chainId: ChainId): ChainClient {
+    if (chainId === this._chainId) {
+      return this._chainClient;
+    }
+    const cached = this._readOnlyChainClients.get(chainId);
+    if (cached) return cached;
+    const rpcUrl = this._rpcUrls[chainId];
+    if (!rpcUrl?.trim()) {
+      throw new Error(
+        `To load agents from chain ${chainId}, add overrideRpcUrls: { ${chainId}: 'https://...' } to SDK config.`
+      );
+    }
+    const client = new ViemChainClient({
+      chainId,
+      rpcUrl: rpcUrl.trim(),
+    });
+    this._readOnlyChainClients.set(chainId, client);
+    return client;
+  }
+
+  /**
+   * Get identity registry address for the given chain (for reads when loading or querying agents on that chain).
+   */
+  getIdentityRegistryAddressForChain(chainId: ChainId): Address {
+    const address =
+      (DEFAULT_REGISTRIES[chainId]?.IDENTITY as Address | undefined) ??
+      this._registryOverrides[chainId]?.IDENTITY;
+    if (!address) {
+      throw new Error(`Chain ${chainId} has no identity registry configured.`);
+    }
+    return address;
+  }
+
+  /**
    * Check if SDK is in read-only mode (no signer)
    */
   get isReadOnly(): boolean {
@@ -359,22 +399,21 @@ export class SDK {
   }
 
   /**
-   * Load an existing agent (hydrates from registration file if registered)
+   * Load an existing agent (hydrates from registration file if registered).
+   * Supports loading agents from any chain; use the same SDK chain to update them.
    */
   async loadAgent(agentId: AgentId): Promise<Agent> {
     // Parse agent ID
     const { chainId, tokenId } = parseAgentId(agentId);
 
-    const currentChainId = await this.chainId();
-    if (chainId !== currentChainId) {
-      throw new Error(`Agent ${agentId} is not on current chain ${currentChainId}`);
-    }
+    const client = this.getChainClientForChain(chainId);
+    const registry = this.getIdentityRegistryAddressForChain(chainId);
 
     // Get agent URI from contract
     let agentURI: string;
     try {
-      agentURI = await this._chainClient.readContract<string>({
-        address: this.identityRegistryAddress(),
+      agentURI = await client.readContract<string>({
+        address: registry,
         abi: IDENTITY_REGISTRY_ABI,
         functionName: 'tokenURI',
         args: [BigInt(tokenId)],
@@ -460,9 +499,11 @@ export class SDK {
    * Check if address is agent owner
    */
   async isAgentOwner(agentId: AgentId, address: Address): Promise<boolean> {
-    const { tokenId } = parseAgentId(agentId);
-    const owner = await this._chainClient.readContract<string>({
-      address: this.identityRegistryAddress(),
+    const { chainId, tokenId } = parseAgentId(agentId);
+    const client = this.getChainClientForChain(chainId);
+    const registry = this.getIdentityRegistryAddressForChain(chainId);
+    const owner = await client.readContract<string>({
+      address: registry,
       abi: IDENTITY_REGISTRY_ABI,
       functionName: 'ownerOf',
       args: [BigInt(tokenId)],
@@ -474,9 +515,11 @@ export class SDK {
    * Get agent owner
    */
   async getAgentOwner(agentId: AgentId): Promise<Address> {
-    const { tokenId } = parseAgentId(agentId);
-    return await this._chainClient.readContract<Address>({
-      address: this.identityRegistryAddress(),
+    const { chainId, tokenId } = parseAgentId(agentId);
+    const client = this.getChainClientForChain(chainId);
+    const registry = this.getIdentityRegistryAddressForChain(chainId);
+    return await client.readContract<Address>({
+      address: registry,
       abi: IDENTITY_REGISTRY_ABI,
       functionName: 'ownerOf',
       args: [BigInt(tokenId)],

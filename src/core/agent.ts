@@ -134,10 +134,18 @@ export class Agent {
       throw new Error('Agent must be registered before reading wallet from chain.');
     }
 
-    const { tokenId } = parseAgentId(this.registrationFile.agentId);
-    const identityRegistryAddress = this.sdk.identityRegistryAddress();
+    const { chainId, tokenId } = parseAgentId(this.registrationFile.agentId);
+    const currentChainId = await this.sdk.chainId();
+    const client =
+      chainId === currentChainId
+        ? this.sdk.chainClient
+        : this.sdk.getChainClientForChain(chainId);
+    const identityRegistryAddress =
+      chainId === currentChainId
+        ? this.sdk.identityRegistryAddress()
+        : this.sdk.getIdentityRegistryAddressForChain(chainId);
 
-    const wallet = await this.sdk.chainClient.readContract<Address>({
+    const wallet = await client.readContract<Address>({
       address: identityRegistryAddress,
       abi: IDENTITY_REGISTRY_ABI,
       functionName: 'getAgentWallet',
@@ -702,6 +710,7 @@ export class Agent {
       signature?: string | Uint8Array;
     }
   ): Promise<TransactionHandle<RegistrationFile> | undefined> {
+    await this._ensureAgentOnCurrentChain();
     if (!this.registrationFile.agentId) {
       throw new Error(
         'Agent must be registered before setting agentWallet on-chain. ' +
@@ -967,6 +976,7 @@ export class Agent {
    * Returns txHash (or "" if it was already unset).
    */
   async unsetWallet(): Promise<TransactionHandle<RegistrationFile> | undefined> {
+    await this._ensureAgentOnCurrentChain();
     if (!this.registrationFile.agentId) {
       throw new Error(
         'Agent must be registered before unsetting agentWallet on-chain. ' +
@@ -1065,6 +1075,22 @@ export class Agent {
   }
 
   /**
+   * Throw if the agent is registered on a different chain than the SDK is configured for.
+   * Used by write paths (register, setWallet, transfer, etc.).
+   */
+  private async _ensureAgentOnCurrentChain(): Promise<void> {
+    const id = this.registrationFile.agentId;
+    if (!id) return;
+    const { chainId } = parseAgentId(id);
+    const current = await this.sdk.chainId();
+    if (chainId !== current) {
+      throw new Error(
+        `Agent ${id} is on chain ${chainId}. Switch SDK to that chain to update it, or load the agent on chain ${current}.`
+      );
+    }
+  }
+
+  /**
    * Update basic agent information
    */
   updateInfo(name?: string, description?: string, image?: URI): this {
@@ -1112,6 +1138,7 @@ export class Agent {
    * Register agent on-chain with IPFS flow
    */
   async registerIPFS(): Promise<TransactionHandle<RegistrationFile>> {
+    await this._ensureAgentOnCurrentChain();
     // Validate basic info
     if (!this.registrationFile.name || !this.registrationFile.description) {
       throw new Error('Agent must have name and description before registration');
@@ -1216,6 +1243,7 @@ export class Agent {
    * Register agent on-chain with HTTP URI
    */
   async registerHTTP(agentUri: string): Promise<TransactionHandle<RegistrationFile>> {
+    await this._ensureAgentOnCurrentChain();
     // Validate basic info
     if (!this.registrationFile.name || !this.registrationFile.description) {
       throw new Error('Agent must have name and description before registration');
@@ -1276,6 +1304,7 @@ export class Agent {
   async transfer(
     newOwner: Address
   ): Promise<TransactionHandle<{ txHash: string; from: Address; to: Address; agentId: AgentId }>> {
+    await this._ensureAgentOnCurrentChain();
     if (!this.registrationFile.agentId) {
       throw new Error('Agent must be registered before transfer');
     }
