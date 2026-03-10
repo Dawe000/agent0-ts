@@ -28,6 +28,7 @@ import { Agent } from './agent.js';
 import type { TransactionHandle } from './transaction-handle.js';
 import {
   DEFAULT_REGISTRIES,
+  DEFAULT_RPC_URLS,
   DEFAULT_SUBGRAPH_URLS,
   IDENTITY_REGISTRY_ABI,
   REPUTATION_REGISTRY_ABI,
@@ -38,7 +39,11 @@ import type { X402RequestOptions, X402RequestResult } from './x402-types.js';
 
 export interface SDKConfig {
   chainId: ChainId;
-  rpcUrl: string;
+  /**
+   * RPC URL for the primary chain. Optional when a built-in default exists for `chainId`.
+   * Overrides DEFAULT_RPC_URLS for this chain when provided.
+   */
+  rpcUrl?: string;
   /**
    * Backwards-compatible alias for `privateKey` (accepts a hex private key string).
    */
@@ -68,10 +73,10 @@ export interface SDKConfig {
   subgraphUrl?: string;
   subgraphOverrides?: Record<ChainId, string>;
   /**
-   * Optional RPC URLs for other chains when paying x402 on a different chain than `chainId`.
-   * Example: { 84532: 'https://base-sepolia.drpc.org' } so pay() can sign for Base Sepolia when the 402 accept is eip155:84532.
+   * Per-chain RPC URL overrides (e.g. for x402 payments on other chains).
+   * Applied after built-in defaults and config.rpcUrl. Example: { 84532: 'https://base-sepolia.drpc.org' }.
    */
-  rpcUrls?: Record<number, string>;
+  overrideRpcUrls?: Record<number, string>;
   /**
    * Max decoded bytes for ERC-8004 JSON base64 data URIs (on-chain registration files).
    * Default: 256 KiB.
@@ -99,7 +104,22 @@ export class SDK {
 
   constructor(config: SDKConfig) {
     this._chainId = config.chainId;
-    this._rpcUrls = { [config.chainId]: config.rpcUrl, ...(config.rpcUrls ?? {}) };
+    // Merge order: defaults → rpcUrl (primary chain) → overrideRpcUrls
+    this._rpcUrls = { ...DEFAULT_RPC_URLS };
+    if (config.rpcUrl?.trim()) {
+      this._rpcUrls[config.chainId] = config.rpcUrl.trim();
+    }
+    if (config.overrideRpcUrls) {
+      for (const [chainId, url] of Object.entries(config.overrideRpcUrls)) {
+        if (url?.trim()) this._rpcUrls[Number(chainId)] = url.trim();
+      }
+    }
+    const mainRpc = this._rpcUrls[config.chainId];
+    if (!mainRpc?.trim()) {
+      throw new Error(
+        `No RPC URL for chain ${config.chainId}. Provide rpcUrl or add the chain to overrideRpcUrls in SDK config.`
+      );
+    }
     const privateKey = config.privateKey ?? config.signer;
     this._signerForPayment = { privateKey, walletProvider: config.walletProvider };
     this._registrationDataUriMaxBytes = config.registrationDataUriMaxBytes ?? 256 * 1024;
@@ -108,7 +128,7 @@ export class SDK {
     this._hasSignerConfig = Boolean(privateKey || config.walletProvider);
     this._chainClient = new ViemChainClient({
       chainId: config.chainId,
-      rpcUrl: config.rpcUrl,
+      rpcUrl: mainRpc,
       privateKey,
       walletProvider: config.walletProvider,
     });
@@ -254,7 +274,7 @@ export class SDK {
     if (!rpcUrl?.trim()) {
       throw new Error(
         `x402: payment option requires chain ${chainId} but SDK is configured for chain ${this._chainId}. ` +
-          `Add rpcUrls: { ${chainId}: 'https://...' } to SDK config to pay on that chain.`
+          `Add overrideRpcUrls: { ${chainId}: 'https://...' } to SDK config to pay on that chain.`
       );
     }
     const client = new ViemChainClient({

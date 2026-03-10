@@ -83,7 +83,7 @@ import { SDK } from 'agent0-sdk';
 // Initialize SDK with IPFS and subgraph
 const sdk = new SDK({
   chainId: 11155111, // Ethereum Sepolia testnet (use 1 for Ethereum Mainnet)
-  rpcUrl: process.env.RPC_URL!,
+  rpcUrl: process.env.RPC_URL, // Optional for supported chains (built-in default RPC is used if omitted)
   privateKey: process.env.PRIVATE_KEY ?? process.env.AGENT_PRIVATE_KEY, // Optional: for write operations
   ipfs: 'pinata', // Options: 'pinata', 'filecoinPin', 'node' (Kubo daemon), 'helia' (embedded)
   pinataJwt: process.env.PINATA_JWT // For Pinata
@@ -93,7 +93,7 @@ const sdk = new SDK({
 
 ### 1b. Initialize SDK (browser-side with ERC-6963 wallets)
 
-In the browser you typically keep **reads on your `rpcUrl`** and use a wallet (EIP-1193) for **writes**.
+In the browser you typically keep **reads on your RPC** (default or `rpcUrl`) and use a wallet (EIP-1193) for **writes**.
 
 ```typescript
 import { SDK } from 'agent0-sdk';
@@ -395,14 +395,18 @@ const allChainsReputation = await sdk.searchAgents(
 // Pagination has been removed; multi-chain results are returned as a flat list.
 ```
 
+### RPC URL defaults and overrides
+
+The SDK ships with **built-in default free RPC URLs** for supported chains (Ethereum, Base, Polygon mainnets and Sepolia testnets). Override order: **defaults** → **`rpcUrl`** (for the primary chain) → **`overrideRpcUrls`** (per-chain overrides, e.g. for x402 payments on other chains). You can omit `rpcUrl` when using a supported chain; pass `rpcUrl` and/or `overrideRpcUrls` to override.
+
 ### Default Chain Behavior
 
 When you initialize the SDK, you specify a default chain. Agent IDs without a `chainId:` prefix use the default chain:
 
 ```typescript
 const sdk = new SDK({
-  chainId: 11155111,  // Default chain
-  rpcUrl: 'https://eth-sepolia.g.alchemy.com/v2/YOUR_KEY'
+  chainId: 11155111,  // Default chain; rpcUrl optional (built-in default used)
+  rpcUrl: 'https://eth-sepolia.g.alchemy.com/v2/YOUR_KEY'  // optional override
 });
 
 // Uses default chain (11155111)

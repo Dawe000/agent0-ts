@@ -14,6 +14,14 @@ const describeMaybe = RUN_LIVE ? describe : describe.skip;
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+describeMaybe('SDK with default RPC (chainId only)', () => {
+  it('instantiates and performs read when only chainId is provided for a supported chain', async () => {
+    const sdk = new SDK({ chainId: 11155111 });
+    const list = await sdk.searchAgents({}, { sort: ['updatedAt:desc'] });
+    expect(Array.isArray(list)).toBe(true);
+  });
+});
+
 describeMaybe('SDK searchAgents (subgraph-only, no keyword)', () => {
   let sdk: SDK;
   let cachedList: Awaited<ReturnType<SDK['searchAgents']>>;

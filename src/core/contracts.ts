@@ -524,3 +524,15 @@ export const DEFAULT_SUBGRAPH_URLS: Record<ChainId, string> = {
   137: 'https://gateway.thegraph.com/api/782d61ed390e625b8867995389699b4c/subgraphs/id/9q16PZv1JudvtnCAf44cBoxg82yK9SSsFvrjCY9xnneF', // Polygon Mainnet
 };
 
+/**
+ * Default free public RPC URLs for supported chains.
+ * Override order in SDK: these defaults, then config.rpcUrl (for primary chain), then config.overrideRpcUrls.
+ */
+export const DEFAULT_RPC_URLS: Record<number, string> = {
+  1: 'https://eth.llamarpc.com',
+  137: 'https://polygon-rpc.com',
+  8453: 'https://mainnet.base.org',
+  84532: 'https://base-sepolia.drpc.org',
+  11155111: 'https://rpc.sepolia.org',
+};
+

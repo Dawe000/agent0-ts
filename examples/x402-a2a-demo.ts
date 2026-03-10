@@ -108,7 +108,7 @@ async function main(): Promise<void> {
     chainId: BASE_SEPOLIA_CHAIN_ID,
     rpcUrl,
     privateKey,
-    rpcUrls: {
+    overrideRpcUrls: {
       [BASE_SEPOLIA_CHAIN_ID]: rpcUrl,
       8453: process.env.BASE_MAINNET_RPC_URL?.trim() || BASE_MAINNET_RPC,
     },
