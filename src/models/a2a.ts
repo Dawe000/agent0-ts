@@ -18,6 +18,14 @@ export interface MessageA2AOptions {
   credential?: string | CredentialObject;
   /** Optional payment payload (e.g. base64 PAYMENT-SIGNATURE) to send with the first request; if server accepts, 2xx and no 402. */
   payment?: string;
+  /** SendMessageConfiguration: accepted output modes (e.g. stream, push). */
+  acceptedOutputModes?: string[];
+  /** SendMessageConfiguration: requested history length for the task. */
+  historyLength?: number;
+  /** SendMessageConfiguration: push notification config (v0.3 / v1). */
+  pushNotificationConfig?: Record<string, unknown>;
+  /** SendMessageConfiguration: return immediately without waiting (v1). */
+  returnImmediately?: boolean;
 }
 
 /** OpenAPI-style apiKey scheme: where to send the value and under what name. */

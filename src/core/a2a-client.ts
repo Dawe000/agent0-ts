@@ -25,6 +25,28 @@ import type { X402RequestResult, X402RequiredResponse } from './x402-types.js';
 const ERR_402 = 'A2A server returned 402 Payment Required; x402 handling will be added in a later phase';
 const ERR_NEITHER = 'A2A response contained neither task nor message';
 
+/**
+ * Serialize Part[] to v0.3.0 spec shape when a2aVersion is 0.3.x.
+ * v0.3 uses discriminated parts: { kind: "text", text }, { kind: "file", file: { uri } | { bytes } }, { kind: "data", data }.
+ * Other versions use v1 member-name format (text/url/data/raw) and are returned unchanged.
+ */
+function partsForSend(parts: Part[], a2aVersion: string): unknown[] {
+  const v = (a2aVersion ?? '').trim();
+  if (!v.startsWith('0.')) return parts as unknown[];
+
+  return parts.map((p) => {
+    if (p.text !== undefined && p.text !== null)
+      return { kind: 'text' as const, text: p.text };
+    if (p.url !== undefined && p.url !== null)
+      return { kind: 'file' as const, file: { uri: p.url } };
+    if (p.data !== undefined && p.data !== null)
+      return { kind: 'data' as const, data: p.data };
+    if (p.raw !== undefined && p.raw !== null)
+      return { kind: 'file' as const, file: { bytes: p.raw } };
+    return { kind: 'text' as const, text: '' };
+  });
+}
+
 /** Result of sendMessage or task.message() when 402 is supported (x402Deps provided). */
 export type A2AMessageResult = MessageResponse | TaskResponse | X402RequiredResponse<MessageResponse | TaskResponse>;
 
@@ -494,7 +516,7 @@ export function createTaskHandle(
                 contextId: String(data.contextId ?? contextId),
                 status: data.status as TaskState | undefined,
                 artifacts: data.artifacts as unknown[] | undefined,
-                messages: data.messages as unknown[] | undefined,
+                messages: (data.history ?? data.messages) as unknown[] | undefined,
               };
             },
           },
@@ -510,7 +532,7 @@ export function createTaskHandle(
         contextId: String(data.contextId ?? contextId),
         status: data.status as TaskState | undefined,
         artifacts: data.artifacts as unknown[] | undefined,
-        messages: data.messages as unknown[] | undefined,
+        messages: (data.history ?? data.messages) as unknown[] | undefined,
       };
     },
     async message(content: string | { parts: Part[] }) {
@@ -518,7 +540,7 @@ export function createTaskHandle(
         typeof content === 'string' ? [{ text: content }] : Array.isArray(content.parts) ? content.parts : [];
       const message: Record<string, unknown> = {
         role: 'ROLE_USER',
-        parts,
+        parts: partsForSend(parts, a2aVersion),
         taskId,
         contextId,
         messageId: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`,
@@ -598,11 +620,11 @@ function toTaskSummary(raw: Record<string, unknown>): TaskSummary {
   const taskId = String(raw.id ?? raw.taskId ?? '');
   const contextId = String(raw.contextId ?? '');
   return {
+    ...raw,
     taskId,
     contextId,
     status: raw.status as TaskState | undefined,
-    messages: raw.messages as unknown[] | undefined,
-    ...raw,
+    messages: (raw.history ?? raw.messages) as unknown[] | undefined,
   };
 }
 
@@ -770,9 +792,15 @@ async function sendMessageJsonRpc(
   const isV1 = v.startsWith('1.');
 
   const makeRequest = (method: string) => {
-    const paramsPayload = isV1 && method === 'SendMessage'
-      ? { request: { message: body.message, configuration: body.configuration ?? { blocking: false } } }
-      : { message: body.message };
+    // v1 §9.4.1: params are the SendMessageRequest object (message, configuration?, metadata?), not wrapped in request
+    const paramsPayload =
+      isV1 && method === 'SendMessage'
+        ? {
+            message: body.message,
+            ...(body.configuration != null && { configuration: body.configuration }),
+            ...(body.metadata != null && { metadata: body.metadata }),
+          }
+        : { message: body.message };
     return {
       jsonrpc: '2.0' as const,
       id: `a2a-${Date.now()}`,
@@ -852,16 +880,20 @@ export async function sendMessage(
 
   const message: Record<string, unknown> = {
     role: 'ROLE_USER',
-    parts,
+    parts: partsForSend(parts, a2aVersion),
     messageId: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`,
   };
   if (options?.contextId) message.contextId = options.contextId;
   if (options?.taskId) message.taskId = options.taskId;
 
   const body: Record<string, unknown> = { message };
-  if (options?.blocking !== undefined) {
-    body.configuration = { blocking: options.blocking };
-  }
+  const config: Record<string, unknown> = {};
+  if (options?.blocking !== undefined) config.blocking = options.blocking;
+  if (options?.acceptedOutputModes !== undefined) config.acceptedOutputModes = options.acceptedOutputModes;
+  if (options?.historyLength !== undefined) config.historyLength = options.historyLength;
+  if (options?.pushNotificationConfig !== undefined) config.pushNotificationConfig = options.pushNotificationConfig;
+  if (options?.returnImmediately !== undefined) config.returnImmediately = options.returnImmediately;
+  if (Object.keys(config).length > 0) body.configuration = config;
 
   const createTaskWithTenant = (b: string, v: string, tid: string, cid: string) =>
     createTaskHandle(b, v, tid, cid, x402Deps, resolvedAuth, tenant);

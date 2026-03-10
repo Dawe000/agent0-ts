@@ -488,7 +488,8 @@ describe('sendMessage (mocked fetch)', () => {
     expect(postCall).toBeDefined();
     const callBody = JSON.parse((postCall as any)[1].body);
     expect(callBody.message.role).toBe('ROLE_USER');
-    expect(callBody.message.parts).toEqual([{ text: 'hello' }]);
+    // v0.3 format: kind + text / file.uri
+    expect(callBody.message.parts).toEqual([{ kind: 'text', text: 'hello' }]);
     expect(callBody.message.messageId).toBeDefined();
 
     expect('task' in result).toBe(false);
@@ -520,7 +521,11 @@ describe('sendMessage (mocked fetch)', () => {
 
     const fetchCall = (globalThis.fetch as jest.Mock).mock.calls[0];
     const callBody = JSON.parse(fetchCall[1].body);
-    expect(callBody.message.parts).toEqual([{ text: 'analyze' }, { url: 'https://example.com' }]);
+    // v0.3 format: kind + text, kind + file.uri
+    expect(callBody.message.parts).toEqual([
+      { kind: 'text', text: 'analyze' },
+      { kind: 'file', file: { uri: 'https://example.com' } },
+    ]);
     expect(callBody.message.contextId).toBe('ctx-0');
     expect(callBody.configuration).toEqual({ blocking: true });
   });
@@ -668,6 +673,26 @@ describe('sendMessage (mocked fetch)', () => {
     expect(callBody.jsonrpc).toBe('2.0');
     expect(callBody.method).toBe('message/send');
     expect(callBody.params?.message).toBeDefined();
+  });
+
+  it('with binding JSONRPC and v1 sends flat params (message, configuration; no request wrapper)', async () => {
+    const body = { result: { message: { content: 'OK', parts: [{ text: 'OK' }], contextId: 'c1' } } };
+    const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce(mockResponse({ status: 200, body }));
+
+    await sendMessage({
+      baseUrl,
+      a2aVersion: '1.0',
+      content: 'hi',
+      options: { blocking: true },
+      binding: 'JSONRPC',
+    });
+
+    const callBody = JSON.parse((fetchSpy.mock.calls[0] as any)[1].body);
+    expect(callBody.method).toBe('SendMessage');
+    expect(callBody.params).toHaveProperty('message');
+    expect(callBody.params).toHaveProperty('configuration');
+    expect(callBody.params.configuration).toEqual({ blocking: true });
+    expect(callBody.params).not.toHaveProperty('request');
   });
 
   it('with binding AUTO tries HTTP+JSON first then JSON-RPC on 404', async () => {
@@ -972,6 +997,20 @@ describe('listTasks', () => {
     expect((globalThis.fetch as jest.Mock).mock.calls[0][0]).toContain('pageSize=100');
   });
 
+  it('surfaces messages from history when task has history (no messages)', async () => {
+    const history = [{ role: 'ROLE_USER', parts: [{ text: 'q' }] }, { role: 'ROLE_AGENT', parts: [{ text: 'a' }] }];
+    const tasksBody = {
+      tasks: [{ id: 't1', taskId: 't1', contextId: 'ctx-1', status: { state: 'open' }, history }],
+    };
+    jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce(mockResponse({ status: 200, body: tasksBody }));
+
+    const result = await listTasks({ baseUrl, a2aVersion });
+
+    const list = result as import('../src/models/a2a.js').TaskSummary[];
+    expect(list).toHaveLength(1);
+    expect(list[0].messages).toEqual(history);
+  });
+
   it('includes filter params in URL when provided', async () => {
     jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce(mockResponse({ status: 200, body: { tasks: [] } }));
 
@@ -1083,6 +1122,25 @@ describe('getTask', () => {
     expect((globalThis.fetch as jest.Mock).mock.calls[0][0]).toBe(`${baseUrl}/v1/tasks/task-123`);
   });
 
+  it('surfaces messages from history when server returns history (no messages)', async () => {
+    const history = [{ role: 'ROLE_USER', parts: [{ text: 'hello' }] }, { role: 'ROLE_AGENT', parts: [{ text: 'hi' }] }];
+    const taskBody = {
+      id: taskId,
+      contextId: 'ctx-abc',
+      status: { state: 'completed' },
+      history,
+      artifacts: [],
+    };
+    jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce(mockResponse({ status: 200, body: taskBody }));
+
+    const result = await getTask(baseUrl, a2aVersion, taskId);
+
+    expect('x402Required' in result).toBe(false);
+    if (!('x402Required' in result)) {
+      expect(result.messages).toEqual(history);
+    }
+  });
+
   it('with x402Deps and payment: first request has PAYMENT-SIGNATURE, 200 returns TaskSummary', async () => {
     const prebuiltPayload = 'get-task-payment-base64';
     const taskBody = {
@@ -1168,6 +1226,28 @@ describe('createTaskHandle', () => {
     }
   });
 
+  it('task.query() surfaces messages from history when server returns history', async () => {
+    const history = [{ role: 'ROLE_USER', parts: [{ text: 'ask' }] }, { role: 'ROLE_AGENT', parts: [{ text: 'answer' }] }];
+    const taskData = {
+      id: taskId,
+      contextId,
+      status: { state: 'completed' },
+      history,
+      artifacts: [],
+    };
+    const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce(mockResponse({ status: 200, body: taskData }));
+
+    const task = createTaskHandle(baseUrl, a2aVersion, taskId, contextId);
+    const result = await task.query();
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      `${baseUrl}/v1/tasks/${taskId}`,
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect('x402Required' in result).toBe(false);
+    if (!('x402Required' in result)) expect(result.messages).toEqual(history);
+  });
+
   it('task.message() POSTs to message:send and returns MessageResponse', async () => {
     const body = {
       message: {
@@ -1191,7 +1271,8 @@ describe('createTaskHandle', () => {
     const callBody = JSON.parse((fetchSpy.mock.calls[0] as any)[1].body);
     expect(callBody.message.taskId).toBe(taskId);
     expect(callBody.message.contextId).toBe(contextId);
-    expect(callBody.message.parts).toEqual([{ text: 'follow up' }]);
+    // v0.3 format: kind + text
+    expect(callBody.message.parts).toEqual([{ kind: 'text', text: 'follow up' }]);
 
     expect('task' in result).toBe(false);
     expect('x402Required' in result).toBe(false);
