@@ -100,11 +100,18 @@ export function pickInterface(
   const allowed = new Set([...base, 'AUTO']);
   const supported = interfaces.filter((i) => allowed.has(i.binding));
   if (supported.length === 0) return null;
-  const order: NormalizedInterface['binding'] = 'AUTO';
+  const indexOf = (binding: NormalizedInterface['binding']) => {
+    const i = base.indexOf(binding);
+    return i === -1 ? base.length : i;
+  };
   return supported.sort((a, b) => {
     const v = (b.version ?? '').localeCompare(a.version ?? '');
     if (v !== 0) return v;
-    return (a.binding === order ? 1 : 0) - (b.binding === order ? 1 : 0);
+    // Tie-break: prefer preferredBindings order, then non-AUTO over AUTO
+    const ia = indexOf(a.binding);
+    const ib = indexOf(b.binding);
+    if (ia !== ib) return ia - ib;
+    return (a.binding === 'AUTO' ? 1 : 0) - (b.binding === 'AUTO' ? 1 : 0);
   })[0] ?? null;
 }
 
