@@ -34,6 +34,10 @@ export interface X402Payment<T = unknown> {
   accepts: X402Accept[];
   /** x402 version from server's PAYMENT-REQUIRED header (e.g. 1 or 2). */
   x402Version?: number;
+  /** V1/V2 human-readable error message from 402 response when present. */
+  error?: string;
+  /** V2 ResourceInfo from 402 response when present. */
+  resource?: ResourceInfo;
   /** When single accept: convenience price (same as accepts[0].price). */
   price?: string;
   /** When single accept: convenience token (same as accepts[0].token). */
@@ -137,17 +141,49 @@ function decodeBase64(b64: string): string {
   return atob(b64);
 }
 
+function parseResourceInfo(obj: unknown): ResourceInfo | undefined {
+  if (obj == null || typeof obj !== 'object' || Array.isArray(obj)) return undefined;
+  const r = obj as Record<string, unknown>;
+  const url = typeof r.url === 'string' ? r.url : undefined;
+  if (url === undefined) return undefined;
+  return {
+    url,
+    description: typeof r.description === 'string' ? r.description : undefined,
+    mimeType: typeof r.mimeType === 'string' ? r.mimeType : undefined,
+  };
+}
+
 /**
- * Result of parsing PAYMENT-REQUIRED header (accepts + optional version).
+ * Result of parsing PAYMENT-REQUIRED header (accepts + optional version, resource, error).
  */
 export interface Parse402FromHeaderResult {
   accepts: X402Accept[];
   x402Version?: number;
+  /** V2 PaymentRequired top-level resource (ResourceInfo). Present when server sends it. */
+  resource?: ResourceInfo;
+  /** V1 PaymentRequirementsResponse human-readable error message. Present when server sends it. */
+  error?: string;
+}
+
+/** V2 ResourceInfo: url, optional description and mimeType (x402 spec §5.1). */
+export interface ResourceInfo {
+  url?: string;
+  description?: string;
+  mimeType?: string;
+}
+
+/** Settlement response (SettlementResponse / SettleResponse) from PAYMENT-RESPONSE header or body after successful pay. */
+export interface X402SettlementResponse {
+  success: boolean;
+  errorReason?: string;
+  transaction?: string;
+  network?: string;
+  payer?: string;
 }
 
 /**
  * Parse PAYMENT-REQUIRED header (x402 spec: base64-encoded JSON with accepts array).
- * Returns accepts and x402Version when present.
+ * Returns accepts, x402Version, and when present resource (v2) and error (v1).
  */
 export function parse402FromHeader(headerValue: string | null): Parse402FromHeaderResult {
   if (!headerValue || typeof headerValue !== 'string') return { accepts: [] };
@@ -161,7 +197,9 @@ export function parse402FromHeader(headerValue: string | null): Parse402FromHead
           .map(normalizeAcceptEntry)
       : [];
     const x402Version = typeof json.x402Version === 'number' ? json.x402Version : undefined;
-    return { accepts, x402Version };
+    const resource = parseResourceInfo(json.resource);
+    const error = typeof json.error === 'string' ? json.error : undefined;
+    return { accepts, x402Version, resource, error };
   } catch {
     return { accepts: [] };
   }
@@ -213,7 +251,7 @@ export function parse402FromWWWAuthenticate(headerValue: string | null): Parse40
 
 /**
  * Parse 402 response body (JSON with accepts array). Used when server sends payment options in body (e.g. httpay.xyz).
- * Returns accepts and x402Version when present.
+ * Returns accepts, x402Version, and when present resource (v2) and error (v1).
  */
 export function parse402FromBody(bodyText: string | null): Parse402FromHeaderResult {
   if (!bodyText || typeof bodyText !== 'string') return { accepts: [] };
@@ -227,7 +265,9 @@ export function parse402FromBody(bodyText: string | null): Parse402FromHeaderRes
           .map(normalizeAcceptEntry)
       : [];
     const x402Version = typeof json.x402Version === 'number' ? json.x402Version : undefined;
-    return { accepts, x402Version };
+    const resource = parseResourceInfo(json.resource);
+    const error = typeof json.error === 'string' ? json.error : undefined;
+    return { accepts, x402Version, resource, error };
   } catch {
     return { accepts: [] };
   }
@@ -239,4 +279,25 @@ export function parse402FromBody(bodyText: string | null): Parse402FromHeaderRes
  */
 export function parse402AcceptsFromHeader(headerValue: string | null): X402Accept[] {
   return parse402FromHeader(headerValue).accepts;
+}
+
+/**
+ * Parse PAYMENT-RESPONSE header (base64-encoded JSON) after successful pay.
+ * Returns settlement info (success, transaction, network, payer) when present and valid.
+ */
+export function parse402SettlementFromHeader(headerValue: string | null): X402SettlementResponse | undefined {
+  if (!headerValue || typeof headerValue !== 'string') return undefined;
+  try {
+    const json = JSON.parse(decodeBase64(headerValue.trim())) as Record<string, unknown>;
+    if (json == null || typeof json !== 'object') return undefined;
+    return {
+      success: json.success === true,
+      errorReason: typeof json.errorReason === 'string' ? json.errorReason : undefined,
+      transaction: typeof json.transaction === 'string' ? json.transaction : undefined,
+      network: typeof json.network === 'string' ? json.network : undefined,
+      payer: typeof json.payer === 'string' ? json.payer : undefined,
+    };
+  } catch {
+    return undefined;
+  }
 }

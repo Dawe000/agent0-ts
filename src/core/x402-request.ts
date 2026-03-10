@@ -4,7 +4,8 @@
  */
 
 import type { X402Accept, X402Payment, X402RequestOptions, X402RequiredResponse, X402RequestResult } from './x402-types.js';
-import { filterEvmAccepts, parse402FromBody, parse402FromHeader, parse402FromWWWAuthenticate } from './x402-types.js';
+import type { ResourceInfo } from './x402-types.js';
+import { filterEvmAccepts, parse402FromBody, parse402FromHeader, parse402SettlementFromHeader, parse402FromWWWAuthenticate } from './x402-types.js';
 
 /** Snapshot of the original request so pay() can retry the same request with PAYMENT-SIGNATURE. */
 export interface RequestSnapshot {
@@ -14,6 +15,10 @@ export interface RequestSnapshot {
   body?: string | ArrayBuffer | Uint8Array;
   /** x402 version from server's 402 PAYMENT-REQUIRED header (1 or 2). When set, buildPayment uses it for payload shape. */
   x402Version?: number;
+  /** V2 ResourceInfo from 402 response when present. Passed to buildPayment for V2 payload. */
+  resource?: ResourceInfo;
+  /** V1/V2 error message from 402 response when present. */
+  error?: string;
 }
 
 export interface X402RequestDeps {
@@ -76,7 +81,7 @@ export async function requestWithX402<T = unknown>(
     // x402 spec: payment requirements in header (PAYMENT-REQUIRED base64) or body (JSON). Fallback: WWW-Authenticate.
     const headerPayload =
       response.headers.get('payment-required') ?? response.headers.get('PAYMENT-REQUIRED');
-    let { accepts, x402Version } = parse402FromHeader(headerPayload);
+    let { accepts, x402Version, resource, error } = parse402FromHeader(headerPayload);
     let responseFromWWWAuthenticate = false;
     if (accepts.length === 0) {
       const wwwAuth = response.headers.get('www-authenticate') ?? response.headers.get('WWW-Authenticate');
@@ -90,6 +95,8 @@ export async function requestWithX402<T = unknown>(
       const parsed = parse402FromBody(bodyText);
       accepts = parsed.accepts;
       if (x402Version === undefined && parsed.x402Version !== undefined) x402Version = parsed.x402Version;
+      if (resource === undefined && parsed.resource !== undefined) resource = parsed.resource;
+      if (error === undefined && parsed.error !== undefined) error = parsed.error;
     }
     accepts = filterEvmAccepts(accepts);
     const singleAccept = accepts.length === 1 ? accepts[0]! : undefined;
@@ -106,7 +113,7 @@ export async function requestWithX402<T = unknown>(
       if (!chosen) {
         throw new Error('x402: no payment option selected (empty accepts or invalid index)');
       }
-      const payload = await deps.buildPayment(chosen, { ...snapshot, x402Version });
+      const payload = await deps.buildPayment(chosen, { ...snapshot, x402Version, resource, error });
       // When server challenged with WWW-Authenticate: try Authorization: x402 <payload> first (RFC 7235); if 402 again, retry with PAYMENT-SIGNATURE (some servers expect spec header).
       const paymentHeaderName = responseFromWWWAuthenticate
         ? 'Authorization'
@@ -173,12 +180,26 @@ export async function requestWithX402<T = unknown>(
         if (Object.keys(err.headers).length === 0) delete err.headers;
         throw err;
       }
-      return parseResponse(retryResponse);
+      const result = await parseResponse(retryResponse);
+      const paymentResponseHeader =
+        retryResponse.headers.get('payment-response') ?? retryResponse.headers.get('PAYMENT-RESPONSE');
+      const settlement = paymentResponseHeader ? parse402SettlementFromHeader(paymentResponseHeader) : undefined;
+      if (
+        settlement !== undefined &&
+        typeof result === 'object' &&
+        result !== null &&
+        !Array.isArray(result)
+      ) {
+        (result as Record<string, unknown>).x402Settlement = settlement;
+      }
+      return result;
     };
 
     const x402Payment: X402Payment<T> = {
       accepts,
       ...(x402Version !== undefined && { x402Version }),
+      ...(error !== undefined && { error }),
+      ...(resource !== undefined && { resource }),
       ...(singleAccept && {
         price: singleAccept.price,
         token: singleAccept.token,

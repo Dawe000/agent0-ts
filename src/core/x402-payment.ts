@@ -237,6 +237,7 @@ export async function buildEvmPayment(
     };
     const payloadV2 = {
       x402Version: 2,
+      ...(_snapshot?.resource != null && { resource: _snapshot.resource }),
       accepted,
       payload: {
         signature,

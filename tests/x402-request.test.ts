@@ -8,16 +8,17 @@ import { requestWithX402 } from '../src/core/x402-request.js';
 
 const BASE_URL = 'https://example.com/api';
 
-function mockResponse(init: { status: number; body?: unknown; ok?: boolean }): Response {
+function mockResponse(init: { status: number; body?: unknown; ok?: boolean; headers?: Record<string, string> }): Response {
   const bodyStr = init.body !== undefined ? JSON.stringify(init.body) : '';
   const ok = init.ok ?? (init.status >= 200 && init.status < 300);
+  const headers = new Headers(init.headers);
   return {
     ok,
     status: init.status,
     statusText: ok ? 'OK' : 'Error',
     text: () => Promise.resolve(bodyStr),
     json: () => Promise.resolve(init.body ?? {}),
-    headers: new Headers(),
+    headers,
     redirected: false,
     type: 'basic',
     url: '',
@@ -152,6 +153,26 @@ describe('x402 request handler (requestWithX402)', () => {
       expect(result.x402Payment.price).toBeUndefined();
       expect(result.x402Payment.token).toBeUndefined();
     });
+
+    it('402 with body containing resource and error exposes them on x402Payment', async () => {
+      const body = {
+        x402Version: 2,
+        error: 'Payment required',
+        resource: { url: 'https://api.example.com/r', description: 'API', mimeType: 'application/json' },
+        accepts: [{ scheme: 'exact', network: 'eip155:84532', amount: '1000', asset: '0xA', payTo: '0xB' }],
+      };
+      jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce(mockResponse({ status: 402, body }));
+
+      const result = await requestWithX402(
+        { url: BASE_URL, method: 'GET', parseResponse },
+        { fetch: globalThis.fetch, buildPayment: async () => 'mock' }
+      );
+
+      expect(isX402Required(result)).toBe(true);
+      if (!isX402Required(result)) return;
+      expect(result.x402Payment.error).toBe('Payment required');
+      expect(result.x402Payment.resource).toEqual({ url: 'https://api.example.com/r', description: 'API', mimeType: 'application/json' });
+    });
   });
 
   describe('402 + pay() success', () => {
@@ -177,6 +198,32 @@ describe('x402 request handler (requestWithX402)', () => {
       expect(fetchSpy).toHaveBeenNthCalledWith(2, BASE_URL, expect.objectContaining({ headers: expect.objectContaining({ 'PAYMENT-SIGNATURE': 'base64-payment-payload' }) }));
       expect(buildPayment).toHaveBeenCalledTimes(1);
       expect(buildPayment).toHaveBeenCalledWith(expect.objectContaining({ price: '1000000', token: '0xT' }), expect.any(Object));
+    });
+
+    it('pay() success with PAYMENT-RESPONSE header adds x402Settlement to result', async () => {
+      const settlement = { success: true, transaction: '0xtx', network: 'eip155:84532', payer: '0xPayer' };
+      const paymentResponseB64 = Buffer.from(JSON.stringify(settlement), 'utf8').toString('base64');
+      const buildPayment = jest.fn().mockResolvedValue('payload');
+      const fetchSpy = jest
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValueOnce(mockResponse({ status: 402, body: { accepts: [{ price: '1', token: '0xT', destination: '0xD' }] } }))
+        .mockResolvedValueOnce(
+          mockResponse({
+            status: 200,
+            body: successBody,
+            headers: { 'PAYMENT-RESPONSE': paymentResponseB64 },
+          })
+        );
+
+      const result = await requestWithX402(
+        { url: BASE_URL, method: 'GET', parseResponse },
+        { fetch: globalThis.fetch, buildPayment }
+      );
+      expect(isX402Required(result)).toBe(true);
+      if (!isX402Required(result)) return;
+      const paid = await result.x402Payment.pay();
+      expect(paid).toEqual(successBody);
+      expect((paid as Record<string, unknown>).x402Settlement).toEqual(settlement);
     });
   });
 
