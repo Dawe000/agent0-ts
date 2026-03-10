@@ -59,7 +59,7 @@ export class Agent {
   private _cachedA2aBinding?: 'HTTP+JSON' | 'JSONRPC' | 'GRPC' | 'AUTO';
   /** Tenant from chosen interface when card is fetched. */
   private _cachedA2aTenant?: string;
-  private _a2aBaseUrlResolved = false;
+  private _a2aInterfaceResolved = false;
   /** When set, used as A2A base URL instead of resolving from card (e.g. from discovery). */
   private _a2aBaseUrlOverride?: string;
 
@@ -235,14 +235,13 @@ export class Agent {
   }
 
   /**
-   * Fetch agent card once and cache base URL from card when present (A2A spec: supportedInterfaces[0].url or url).
+   * Resolve A2A interface once: fetch agent card and cache chosen interface (base URL, version, binding, tenant).
    * Prefer card-declared URL over deriving from endpoint value.
    * Discovery fallback: if endpoint is a host/base (no card path), try /.well-known/agent-card.json then /.well-known/agent.json on 404.
-   * Card fallbacks: supportedInterfaces[0].url → url → additionalInterfaces[0].url (0.3-style).
    */
-  private async _ensureA2aBaseUrlResolved(): Promise<void> {
-    if (this._a2aBaseUrlResolved) return;
-    this._a2aBaseUrlResolved = true;
+  private async _resolveA2aInterface(): Promise<void> {
+    if (this._a2aInterfaceResolved) return;
+    this._a2aInterfaceResolved = true;
     const endpoint = this.a2aEndpoint;
     if (!endpoint || !endpoint.startsWith('http')) return;
     try {
@@ -371,7 +370,7 @@ export class Agent {
     content: string | { parts: Part[] },
     options?: MessageA2AOptions
   ): Promise<MessageResponse | TaskResponse | A2APaymentRequired<MessageResponse | TaskResponse>> {
-    await this._ensureA2aBaseUrlResolved();
+    await this._resolveA2aInterface();
     const baseUrl = this._getA2aBaseUrl();
     const ep = this.registrationFile.endpoints.find((e) => e.type === EndpointType.A2A);
     const a2aVersion = this._cachedA2aVersion ?? (ep?.meta?.version as string) ?? '0.3';
@@ -432,7 +431,7 @@ export class Agent {
   async listTasks(
     options?: ListTasksOptions
   ): Promise<TaskSummary[] | A2APaymentRequired<TaskSummary[]>> {
-    await this._ensureA2aBaseUrlResolved();
+    await this._resolveA2aInterface();
     const baseUrl = this._getA2aBaseUrl();
     const ep = this.registrationFile.endpoints.find((e) => e.type === EndpointType.A2A);
     const a2aVersion = this._cachedA2aVersion ?? (ep?.meta?.version as string) ?? '0.3';
@@ -453,7 +452,7 @@ export class Agent {
       payment?: string;
     }
   ): Promise<AgentTask | A2APaymentRequired<AgentTask>> {
-    await this._ensureA2aBaseUrlResolved();
+    await this._resolveA2aInterface();
     const baseUrl = this._getA2aBaseUrl();
     const ep = this.registrationFile.endpoints.find((e) => e.type === EndpointType.A2A);
     const a2aVersion = this._cachedA2aVersion ?? (ep?.meta?.version as string) ?? '0.3';
