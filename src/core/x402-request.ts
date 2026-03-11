@@ -38,7 +38,7 @@ async function defaultParseResponse(res: Response): Promise<unknown> {
 /**
  * Perform a single HTTP request with built-in 402 handling.
  * - 2xx: return parsed result (default: JSON body; or use parseResponse for custom parsing).
- * - 402: do not throw; return { x402Required: true, x402Payment } with pay(accept?) that retries once.
+ * - 402: do not throw; return { x402Required: true, x402Payment } with pay(accept?) (uses first-with-balance when checkBalance is set) that retries once.
  * - Other status or network error: throw.
  */
 export async function requestWithX402<T = unknown>(
@@ -104,7 +104,21 @@ export async function requestWithX402<T = unknown>(
     const payFn = async (accept?: X402Accept | number): Promise<T> => {
       let chosen: X402Accept | undefined;
       if (accept === undefined) {
-        chosen = singleAccept ?? accepts[0];
+        if (deps.checkBalance) {
+          for (let i = 0; i < accepts.length; i++) {
+            const acc = accepts[i];
+            if (acc && (await deps.checkBalance(acc))) {
+              chosen = acc;
+              break;
+            }
+          }
+          if (chosen === undefined) {
+            throw new Error('x402: no accept with sufficient balance');
+          }
+        }
+        if (chosen === undefined) {
+          chosen = singleAccept ?? accepts[0];
+        }
       } else if (typeof accept === 'number') {
         chosen = accepts[accept];
       } else {
@@ -207,16 +221,7 @@ export async function requestWithX402<T = unknown>(
       }),
       pay: payFn,
       ...(deps.checkBalance && {
-        payFirst: async (): Promise<T> => {
-          for (let i = 0; i < accepts.length; i++) {
-            const accept = accepts[i];
-            if (!accept) continue;
-            if (await deps.checkBalance!(accept)) {
-              return payFn(i);
-            }
-          }
-          throw new Error('x402: no accept with sufficient balance');
-        },
+        payFirst: (): Promise<T> => payFn(), // pay() with no arg now uses first-with-balance
       }),
     };
 

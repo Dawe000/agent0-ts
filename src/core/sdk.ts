@@ -297,11 +297,7 @@ export class SDK {
    * Use x402Payment.pay() to pay and retry.
    */
   async request<T = object>(options: X402RequestOptions<T>): Promise<X402RequestResult<T>> {
-    return requestWithX402(options, {
-      fetch: globalThis.fetch,
-      buildPayment: (accept, snapshot) =>
-        buildEvmPayment(accept, this.getChainClientForAccept(accept), snapshot),
-    });
+    return requestWithX402(options, this.getX402RequestDeps());
   }
 
   /**
