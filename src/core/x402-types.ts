@@ -100,12 +100,26 @@ export function isX402Required<T>(
   return typeof result === 'object' && result !== null && 'x402Required' in result && (result as X402RequiredResponse<T>).x402Required === true;
 }
 
-/** True if the accept is EVM (eip155:* or numeric network). Used to filter out Solana etc. */
+/** EVM chain names/slugs: x402 spec V1 names (docs.x402.org network-and-token-support) + common slugs agents may send. */
+const EVM_NETWORK_SLUGS = new Set([
+  'base', 'base-sepolia', 'base-mainnet', 'base-goerli',
+  'ethereum', 'ethereum-mainnet', 'ethereum-sepolia', 'mainnet', 'sepolia', 'goerli', 'holesky',
+  'polygon', 'polygon-amoy', 'matic',
+  'arbitrum', 'arbitrum-one', 'arbitrum-sepolia',
+  'optimism', 'optimism-mainnet', 'optimism-sepolia',
+  'avalanche', 'avalanche-fuji', 'fuji', 'bnb', 'bnb-chain', 'bsc', 'bsc-testnet',
+  'linea', 'linea-sepolia', 'zksync', 'zksync-sepolia',
+  'iotex', 'iotex-testnet',
+  'sei', 'sei-testnet', 'skale-base', 'skale-base-sepolia',
+]);
+
+/** True if the accept is EVM (eip155:* or numeric network or known EVM slug). Used to filter out Solana etc. */
 function isEvmAccept(a: X402Accept): boolean {
   const n = a.network;
   if (n == null || n === '') return true;
-  const s = String(n);
-  return /^eip155:\d+$/.test(s) || /^\d+$/.test(s);
+  const s = String(n).toLowerCase();
+  if (/^eip155:\d+$/.test(s) || /^\d+$/.test(s)) return true;
+  return EVM_NETWORK_SLUGS.has(s);
 }
 
 /** Filter accepts to EVM-only (Solana and other non-EVM options removed). Applied when building 402 response. */
@@ -235,7 +249,15 @@ export function parse402FromWWWAuthenticate(headerValue: string | null): Parse40
     const n = parseFloat(amount);
     if (Number.isFinite(n)) price = String(Math.round(n * 1e6));
   }
-  const networkStr = chainId ? (chainId.includes(':') ? chainId : `eip155:${chainId}`) : undefined;
+  // x402 v1 uses chain names (e.g. "base-sepolia"); v2 uses CAIP-2 (eip155:chainId). Prefer explicit network.
+  const rawNetwork = pairs.network ?? chainId;
+  const networkStr = !rawNetwork
+    ? undefined
+    : /^eip155:\d+$/.test(rawNetwork)
+      ? rawNetwork
+      : /^\d+$/.test(rawNetwork.trim())
+        ? `eip155:${rawNetwork}`
+        : rawNetwork; // chain name as-is for v1
   const accept: X402Accept = {
     price,
     token,
