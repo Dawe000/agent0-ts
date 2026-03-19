@@ -54,17 +54,17 @@ Like the A2A implementation, which supports multiple bindings (HTTP+JSON, JSON-R
 - **MCP** has its own auth model: for **HTTP-based transports**, the spec defines optional [OAuth 2.1 / Protected Resource Metadata](docs/mcp/specification-2025-06-18/basic/authorization.mdx); for **stdio**, credentials typically come from the environment.
 - The SDK can still follow the same **pattern** as A2A: accept credentials via options (e.g. `options.credential` or `options.auth`) and apply them to MCP requests. For HTTP, that may be a bearer token or API key; for full OAuth flows, implementation would follow MCP’s authorization spec (discovery, tokens). So we **borrow the pattern** (credentials in options, applied to requests), not the literal A2A schema. When an MCP server requires auth, the client should support passing credentials in and, where applicable, respect MCP’s OAuth discovery.
 
-### Session handling (lazy by default; session object when server uses sessions)
+### Session handling (session ID on the client; no separate session object)
 
-MCP requires an **initialization** handshake before other requests. For Streamable HTTP, the server **MAY** return an `Mcp-Session-Id` header; if so, the client must send that ID on all subsequent requests. Design:
+MCP requires an **initialization** handshake before other requests. For Streamable HTTP, the server **MAY** return an `Mcp-Session-Id` header; if so, the client must send that ID on all subsequent requests.
 
-- **Default (easy path):** Lazy init on first use. No explicit “connect” step: the first call to `agent.mcp.listTools()`, `agent.mcp.get_weather()`, etc. runs MCP initialize, stores any `Mcp-Session-Id` internally, and reuses that state for all later calls. So `agent.mcp.*` just works.
-- **When the server returns a session ID:** Same lazy init, but when `Mcp-Session-Id` is present the SDK **creates a session object** and attaches it (e.g. `agent.mcp.session`). That object:
-  - Exposes the same surface (e.g. `session.listTools()`, `session.call(name, args)`, `session.prompts`, `session.resources`) so callers can pass it around.
-  - Exposes `session.id` (the Mcp-Session-Id) for resuming elsewhere (e.g. `createMCPClient(summary, { sessionId: agent.mcp.session.id })`).
-  - Exposes `session.close()` to explicitly terminate the session (e.g. HTTP DELETE with `Mcp-Session-Id` when supported).
-- If the server never sends a session ID, `agent.mcp.session` remains undefined; no session object is created. One code path; the session object exists only when the protocol has a session.
-- **Multiple sessions** to the same server (one agent): the default is one implicit session per agent. For a second session, provide an explicit way to create another (e.g. `agent.mcp.connect()` or `createMCPClient(..., { newSession: true })`) that runs a new initialize and returns a new session object.
+- **No separate “session” object.** The MCP client (whether `agent.mcp` or `createMCPClient(summary)`) holds a single **session ID** in internal state when the server returns one.
+- **Default (easy path):** Lazy init on first use. The first call to `agent.mcp.listTools()`, `agent.mcp.get_weather()`, etc. runs MCP initialize. If the response includes `Mcp-Session-Id`, that value becomes **the** session ID for this client for the **lifetime of the agent (or MCP client instance)**. All later requests send that header. If the server never sends a session ID, the client stays stateless with respect to session headers.
+- **Retrieve the session ID:** Expose a getter or method (e.g. `agent.mcp.getSessionId()` or read-only `agent.mcp.sessionId`) so callers can persist or log it.
+- **Resume / continue elsewhere:** A power user can create a **new** MCP client with that ID, e.g. `sdk.createMCPClient(summary, { sessionId: savedId })`, or set the ID on an existing agent’s MCP handle, e.g. `agent.mcp.setSessionId(savedId)` (exact naming TBD), so the next requests use the resumed session without a new initialize (or after a minimal handshake, per server behavior).
+- **Reset session:** `agent.mcp.resetSession()` (and the same on summary-backed MCP clients) clears the stored session ID and any init state so the **next** MCP call performs a fresh `initialize` and adopts a new `Mcp-Session-Id` if the server sends one. Use this to start over on the same agent without constructing a new `Agent`.
+
+For **multiple concurrent sessions** to the same server, use **multiple** agent instances or **multiple** `createMCPClient(...)` instances—each has its own session ID state.
 
 ---
 
@@ -162,21 +162,21 @@ const result = await agent.mcp.get_weather(
 const mcpClient = sdk.createMCPClient(summary, { credential: 'Bearer ...' });
 ```
 
-### Session (when server returns Mcp-Session-Id)
+### Session ID (no separate session object)
 
 ```typescript
-// Default: just use agent.mcp; init happens on first call. No session object unless the server sends one.
-const result = await agent.mcp.get_weather({ location: 'London' });
+// Default: first call runs initialize; if the server returns Mcp-Session-Id, it is stored on this client for its lifetime.
+await agent.mcp.get_weather({ location: 'London' });
 
-// If the server returned Mcp-Session-Id, agent.mcp.session is set. Use it to pass the connection around or close it.
-if (agent.mcp.session) {
-  const sessionId = agent.mcp.session.id;       // e.g. for resuming elsewhere
-  await someOtherModule.useSession(agent.mcp.session);
-  agent.mcp.session.close();                    // optional: explicit session teardown
-}
+// Read the current session ID (undefined if the server never sent one)
+const id = agent.mcp.getSessionId(); // or agent.mcp.sessionId — naming TBD
 
-// Resuming elsewhere: create a client that reuses a previous session ID
-const resumed = sdk.createMCPClient(summary, { sessionId: agent.mcp.session?.id });
+// Later: resume with a new client, or attach an ID to this agent’s MCP handle
+const other = sdk.createMCPClient(summary, { sessionId: id });
+agent.mcp.setSessionId(id); // optional: inject a saved ID before the next call
+
+// Start over on the same agent (clears session ID + re-init on next call)
+agent.mcp.resetSession();
 ```
 
 ### Handling 402 (payment required)
@@ -204,15 +204,15 @@ if (result.x402Required) {
 
 1. `Agent` has an MCP endpoint (and optionally a cached tool/prompt/resource list from the endpoint crawler).
 2. On first use, run MCP **initialize**; resolve **transport** (e.g. Streamable HTTP); apply **auth** when `options.credential` or equivalent is provided.
-3. If the server returns `Mcp-Session-Id`, create a **session object** and attach it as `agent.mcp.session`; otherwise keep state internal only.
-4. Expose `agent.mcp` with tools, prompts, and resources (list/get, list/read, list/call as in §7). Each request uses the same transport and, when present, session ID; when configured, x402 and credentials are applied.
+3. If the server returns `Mcp-Session-Id`, store it as **the** session ID for this client instance; send it on every subsequent request until `resetSession()` or a new ID is set.
+4. Expose `agent.mcp` with tools, prompts, and resources (list/get, list/read, list/call as in §7), plus `getSessionId()` / `setSessionId()` / `resetSession()` as above.
 
 ### Summary path
 
 1. `AgentSummary` has a `mcp` URL (and optionally `mcpTools`, `mcpPrompts`, `mcpResources` from discovery).
-2. `createMCPClient(summary)` (optionally with default credentials) returns a client that resolves transport and capabilities on first use.
-3. The client exposes the same surface: tools (call / dot / bracket), prompts (list, get), resources (list, read).
-4. All requests use the SDK’s x402 stack and auth when configured.
+2. `createMCPClient(summary, { sessionId?, credential?, ... })` returns a client that resolves transport and capabilities on first use; optional `sessionId` resumes a prior session.
+3. The client exposes the same surface: tools (call / dot / bracket), prompts (list, get), resources (list, read), plus `getSessionId()` / `setSessionId()` / `resetSession()`.
+4. All requests use the SDK’s x402 stack and auth when configured; session ID is sent when present.
 
 ---
 
@@ -253,6 +253,6 @@ For consistency with A2A:
 
 - **Class**: `MCPClientFromSummary` (or equivalent) for the summary-backed client.
 - **Factory**: `createMCPClient(agentOrSummary)` on the SDK.
-- **Agent surface**: `agent.mcp` as the namespace for tools, prompts, and resources: `agent.mcp.listTools()` (or `agent.mcp.tools.list()`), `agent.mcp.tools[name]`, `agent.mcp.call(name, args)`, dot access for identifier-safe tool names; `agent.mcp.prompts.list()`, `agent.mcp.prompts.get(name, arguments)`; `agent.mcp.resources.list()`, `agent.mcp.resources.read(uri)`. When the server returns a session ID, `agent.mcp.session` is set (session object with same surface plus `.id` and `.close()`). For multiple sessions, `agent.mcp.connect()` (or equivalent) returns a new session object.
+- **Agent surface**: `agent.mcp` for tools, prompts, and resources as above, plus **session ID helpers**: `getSessionId()` (or read-only `sessionId`), `setSessionId(id)` to inject a saved ID, `resetSession()` to clear and re-init on next call. No separate session object—the ID lives on the client. **Multiple concurrent sessions:** use multiple `Agent` / `createMCPClient` instances.
 
 Modules and exports should follow the same layout as the A2A client (e.g. a dedicated MCP client module and summary-client module, reusing x402 and endpoint resolution patterns).
