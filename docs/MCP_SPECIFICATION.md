@@ -39,6 +39,7 @@ MCP support in the SDK should mirror the existing A2A implementation. The follow
 
 - MCP requests that result in HTTP 402 must be handled via the same `requestWithX402` / `getX402RequestDeps()` flow used in [src/core/a2a-client.ts](src/core/a2a-client.ts) and [src/core/x402-request.ts](src/core/x402-request.ts).
 - **Spec**: When the SDK has x402 dependencies configured, MCP tool (and optionally resource/prompt) requests must go through this stack: on 402, return `{ x402Required: true, x402Payment }` and allow the caller to `pay()` or `payFirst()` and retry, rather than throwing.
+- 
 
 ### Transports (transport-open design)
 
@@ -75,10 +76,9 @@ One MCP server exposes **many** tools (e.g. via `tools/list`). The SDK already c
 ### Proposed API
 
 - **Dot notation for identifier-safe names**  
-  `agent.mcp.<toolname>` for tool names that are valid JavaScript identifiers (e.g. `get_weather`, `getUser`, `read_file`). Each such property is a callable: e.g. `agent.mcp.get_weather(args)`.
-
+`agent.mcp.<toolname>` for tool names that are valid JavaScript identifiers (e.g. `get_weather`, `getUser`, `read_file`). Each such property is a callable: e.g. `agent.mcp.get_weather(args)`.
 - **Arbitrary tool names**  
-  MCP tool names may include `-`, `.`, `/` (see [docs/mcp/seps/986-specify-format-for-tool-names.md](docs/mcp/seps/986-specify-format-for-tool-names.md)). Those are not valid for dot access. Support them via:
+MCP tool names may include `-`, `.`, `/` (see [docs/mcp/seps/986-specify-format-for-tool-names.md](docs/mcp/seps/986-specify-format-for-tool-names.md)). Those are not valid for dot access. Support them via:
   - **Bracket access**: `agent.mcp.tools["name"]` for any tool name—use square brackets and a string (e.g. `agent.mcp.tools["my-tool"]`, `agent.mcp.tools["user-profile/update"]`). Returns a callable; call it with `(args)`.
 - **Generic call**: `agent.mcp.call(name, args)` when the name is in a variable.
 
@@ -230,11 +230,13 @@ if (result.x402Required) {
 
 MCP distinguishes three server primitives. Tools are **model-controlled** (invoke); prompts are **user-controlled** (retrieve message templates); resources are **application-controlled** (read data by URI). The protocol verbs differ:
 
-| Primitive | List | Retrieve / Act | Returns |
-|-----------|------|----------------|---------|
-| **Tools** | `tools/list` | `tools/call`(name, args) | Tool result (content/parts). |
-| **Prompts** | `prompts/list` | `prompts/get`(name, arguments) | **Messages** (role + content) to send to an LLM. |
-| **Resources** | `resources/list` | `resources/read`(uri) | **Contents** (e.g. text, blob) for the given URI. |
+
+| Primitive     | List             | Retrieve / Act                 | Returns                                           |
+| ------------- | ---------------- | ------------------------------ | ------------------------------------------------- |
+| **Tools**     | `tools/list`     | `tools/call`(name, args)       | Tool result (content/parts).                      |
+| **Prompts**   | `prompts/list`   | `prompts/get`(name, arguments) | **Messages** (role + content) to send to an LLM.  |
+| **Resources** | `resources/list` | `resources/read`(uri)          | **Contents** (e.g. text, blob) for the given URI. |
+
 
 Prompts are not “called”—they are **retrieved** with arguments; the server returns one or more messages (e.g. a user message with filled-in template). Resources are **read** by URI; there are also **resource templates** (parameterized URIs) with their own list/read flow.
 
