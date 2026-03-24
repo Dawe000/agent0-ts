@@ -26,6 +26,8 @@ import { FeedbackManager } from './feedback-manager.js';
 import { AgentIndexer } from './indexer.js';
 import { Agent } from './agent.js';
 import { A2AClientFromSummary } from './a2a-summary-client.js';
+import { MCPClientFromSummary } from './mcp-summary-client.js';
+import type { MCPClientOptions } from '../models/mcp.js';
 import type { TransactionHandle } from './transaction-handle.js';
 import {
   DEFAULT_REGISTRIES,
@@ -492,6 +494,22 @@ export class SDK {
       return agentOrSummary;
     }
     return new A2AClientFromSummary(this, agentOrSummary);
+  }
+
+  /**
+   * Create an MCP client from a loaded Agent or an AgentSummary.
+   * - Agent: returns agent.mcp handle
+   * - AgentSummary: returns summary-backed MCP client, resolved lazily from summary.mcp
+   */
+  createMCPClient(
+    agentOrSummary: Agent | AgentSummary,
+    options: MCPClientOptions = {}
+  ): import('../models/mcp.js').MCPHandle {
+    if (agentOrSummary instanceof Agent) {
+      if (options.sessionId) agentOrSummary.mcp.setSessionId(options.sessionId);
+      return agentOrSummary.mcp;
+    }
+    return new MCPClientFromSummary(this, agentOrSummary, options);
   }
 
   /**
