@@ -1,6 +1,7 @@
 /**
- * MCP demo: list tools, `get_affirmation`, then **`generate_controller_brief`** (~$0.01 USDC via x402 on Base).
- * `generate_controller_brief` requires a Delx `session_id`; this script uses **`quick_session`** once and parses it from the tool text.
+ * MCP demo: list tools, `get_affirmation`, then **`generate_controller_brief`** (may charge ~$0.01 USDC on Base via x402 when the server returns HTTP 402).
+ * `generate_controller_brief` needs a Delx `session_id`; run **`quick_session`** once and parse the UUID from the reply text.
+ * On 402, logs **`pay.accepts`** (payment options), then **`pay()`**, then prints the tool result.
  *
  *   npx tsx examples/mcp-demo.ts
  *
